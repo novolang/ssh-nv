@@ -1,0 +1,270 @@
+// sshkex.nv — the transport layer: what both sides agree on, the
+// exchange hash, and the six keys that come out of it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.  The ephemeral key pair, the randomness and the
+// signature check are all arguments: this module computes a hash and
+// derives keys, and nothing in it generates or performs anything.
+//
+// THE EXCHANGE HASH IS EIGHT FIELDS IN ONE ORDER AND NOTHING CHECKS IT
+// FOR YOU.  H is SHA-256 over the client's version string, the
+// server's, the client's KEXINIT payload, the server's, the host key,
+// the client's ephemeral public key, the server's, and the shared
+// secret as an `mpint`.  Every one of those is a length-prefixed
+// `string` and the order is the specification's.  Get one wrong and the
+// signature over H does not verify — and the failure says "bad
+// signature", which sends every reader to the signature code rather
+// than to the field they left out.  So `exchange_hash_input` builds the
+// buffer as its own function and `tests/sshwire_tests.nv` asserts it,
+// separately from the hash and separately from the check.
+//
+// THE FIRST KEY EXCHANGE'S HASH IS THE SESSION ID FOREVER.  It does not
+// change on a rekey, it is what every `publickey` signature is over,
+// and it is what binds an authentication to this connection rather than
+// to a replay of one.  `SshKexResult.session_id` is set once, and
+// `kex_result` carries it forward unchanged on a rekey.
+//
+// AND NEGOTIATION IS FIRST-MATCH IN THE CLIENT'S ORDER.  RFC 4253 § 7.1:
+// the chosen algorithm is the first on the CLIENT's list that also
+// appears on the server's.  A client that scanned the server's list
+// instead lets the server pick, which is the wrong way round for every
+// preference a client has.
+
+// The version string this package sends.
+//
+// `SSH-2.0-` and then a software name.  The comment after a space is
+// optional and IS NOT part of the exchange hash's input — a client that
+// included it computes a different H from the server.
+pub const SSH_VERSION_PREFIX = "SSH-2.0-"
+
+// The key exchange method this package implements.
+pub const SSH_KEX_CURVE25519 = "curve25519-sha256"
+
+// The same method under its pre-standard name, which many deployed
+// servers still offer and which is byte-identical.
+pub const SSH_KEX_CURVE25519_LIBSSH = "curve25519-sha256@libssh.org"
+
+// The cipher this package implements.
+pub const SSH_CIPHER_CHACHA20 = "chacha20-poly1305@openssh.com"
+
+// The host key algorithm this package can verify.
+pub const SSH_HOSTKEY_ED25519 = "ssh-ed25519"
+
+// How many bytes of key material the cipher needs: 64, two 32-byte
+// keys.
+pub const SSH_CHACHA_KEY_BYTES = 64
+
+// What both sides offered and what was chosen.
+pub struct SshKexInit
+    // The 16 random bytes that lead a KEXINIT.  An argument in
+    // `kex_init`, because this module draws nothing.
+    cookie: [u8]
+    kex_algorithms: [Str]
+    host_key_algorithms: [Str]
+    cipher_client_to_server: [Str]
+    cipher_server_to_client: [Str]
+    mac_client_to_server: [Str]
+    mac_server_to_client: [Str]
+    compression_client_to_server: [Str]
+    compression_server_to_client: [Str]
+    // Whether the sender is guessing the key exchange method and has
+    // already sent its first packet.  This package never guesses, and
+    // it has to READ the flag: a server that guessed and guessed wrong
+    // has sent a packet the client must discard, and a client that did
+    // not discard it is one packet out of step for the rest of the
+    // connection.
+    first_kex_packet_follows: Bool
+
+// What was agreed.
+pub struct SshAgreed
+    kex: Str
+    host_key: Str
+    cipher_c2s: Str
+    cipher_s2c: Str
+    mac_c2s: Str
+    mac_s2c: Str
+    compression_c2s: Str
+    compression_s2c: Str
+
+// The result of one key exchange.
+pub struct SshKexResult
+    // The exchange hash of THIS exchange.
+    exchange_hash: [u8]
+    // The exchange hash of the FIRST one, which never changes.  Every
+    // `publickey` signature is over this.
+    session_id: [u8]
+    // The shared secret, as the magnitude an `mpint` would carry.
+    shared_secret: [u8]
+    // The server's host key blob, for the verifier.
+    host_key: [u8]
+    agreed: SshAgreed
+
+// The six keys RFC 4253 § 7.2 derives, in its own order.
+//
+// Two initialisation vectors, two encryption keys and two integrity
+// keys, from the letters `A` through `F`.  Six and not three, because
+// the two directions never share key material — and a client that
+// derived one set and used it both ways has a connection that works
+// perfectly against itself and against nothing else.
+pub struct SshKeys
+    iv_c2s: [u8]
+    iv_s2c: [u8]
+    key_c2s: [u8]
+    key_s2c: [u8]
+    mac_c2s: [u8]
+    mac_s2c: [u8]
+
+// A KEXINIT with this package's own preferences.
+//
+// `cookie` is the caller's sixteen random bytes.
+//
+// ```novo
+// use sshkex
+//
+// fn init(cookie: [u8]) -> SshKexInit
+//     sshkex.kex_init(cookie)
+// ```
+pub fn kex_init(cookie: [u8]) -> SshKexInit []
+    todo("ssh-nv.sshkex.kex_init")
+
+// Write a KEXINIT's payload.
+//
+// The exact bytes, because the exchange hash covers the PAYLOAD of both
+// KEXINITs and not the values in them: a client that re-serialised the
+// server's KEXINIT to hash it gets a different H whenever the server
+// wrote a list this package would have written differently.  Keeping
+// the received bytes is the only correct thing to do, which is why
+// `exchange_hash_input` takes both payloads as bytes rather than as
+// values.
+pub fn write_kex_init(out: [u8], k: SshKexInit) -> Int []
+    todo("ssh-nv.sshkex.write_kex_init")
+
+// Read one.
+pub fn read_kex_init(payload: [u8]) -> Result<SshKexInit, SshFault> []
+    todo("ssh-nv.sshkex.read_kex_init")
+
+// What the two lists agree on.
+//
+// FIRST MATCH IN THE CLIENT'S ORDER, for each of the eight lists.  A
+// client that scanned the server's list instead lets the server choose,
+// which is the wrong way round for every preference a client has — and
+// is how a client that prefers ChaCha20 ends up negotiating whatever
+// the server put first.
+//
+// ```novo
+// use sshfault
+// use sshkex
+//
+// fn agree(c: SshKexInit, s: SshKexInit) -> Result<SshAgreed, SshFault>
+//     sshkex.negotiate(c, s)
+// ```
+pub fn negotiate(client: SshKexInit, server: SshKexInit) -> Result<SshAgreed, SshFault> []
+    todo("ssh-nv.sshkex.negotiate")
+
+// Whether this package can complete what was agreed.
+//
+// Answers honestly rather than optimistically: `ssh-rsa` and
+// `rsa-sha2-256` are on many servers' lists and this package has no RSA
+// at all, so a negotiation that lands on one is a
+// `SshFaultNoPrimitive` naming it rather than a failure three messages
+// later.
+pub fn can_complete(a: SshAgreed) -> ?SshFault []
+    todo("ssh-nv.sshkex.can_complete")
+
+// The eight fields the exchange hash is computed over, in order,
+// written into the caller's buffer.
+//
+// Its own function because it is the thing that goes wrong, and because
+// when it does the failure says "bad signature" and points at the wrong
+// code.  A test asserts these bytes against a recorded handshake before
+// anything is hashed.
+pub fn exchange_hash_input(out: [u8], client_version: Str, server_version: Str,
+                           client_kexinit: [u8], server_kexinit: [u8], host_key: [u8],
+                           client_public: [u8], server_public: [u8], shared_secret: [u8]) -> Int []
+    todo("ssh-nv.sshkex.exchange_hash_input")
+
+// The exchange hash: SHA-256 over those eight fields.
+pub fn exchange_hash(input: [u8], out: [u8]) -> [u8] []
+    todo("ssh-nv.sshkex.exchange_hash")
+
+// The bytes a version string contributes to the hash.
+//
+// WITHOUT the trailing CRLF and WITHOUT the optional comment after the
+// first space.  Both are things the peer sent and neither is hashed,
+// which is a rule with no reason behind it except that the
+// specification says so — and is therefore one nothing reminds an
+// implementer of.
+pub fn version_for_hash(line: Str) -> Str []
+    todo("ssh-nv.sshkex.version_for_hash")
+
+// Whether a version line is one this package will speak to.
+//
+// `SSH-2.0-` and `SSH-1.99-` are; `SSH-1.5-` is refused BY NAME rather
+// than attempted, because version 1 is a different protocol with known
+// breaks in it and a client that fell back to it is a client that can
+// be downgraded into one.
+pub fn version_acceptable(line: Str) -> Bool []
+    todo("ssh-nv.sshkex.version_acceptable")
+
+// The six keys, from the shared secret and the exchange hash.
+//
+// The derivation is `HASH(K || H || <letter> || session_id)`, extended
+// by re-hashing `K || H || <everything so far>` when more bytes are
+// needed than one digest gives.  The extension is the part that is
+// wrong in most first attempts, and it only shows with a cipher whose
+// key is longer than the hash — which ChaCha20-Poly1305, at 64 bytes
+// over a 32-byte SHA-256, is.
+pub fn derive_keys(r: SshKexResult) -> SshKeys []
+    todo("ssh-nv.sshkex.derive_keys")
+
+// The key material one direction's cipher takes, as `sshpkt` wants it.
+//
+// K_2 then K_1: the payload key first and the length key second, which
+// is the order OpenSSH's own implementation lays them out in and is not
+// the order the name suggests.
+pub fn cipher_keys(k: SshKeys, client_to_server: Bool) -> [u8] []
+    todo("ssh-nv.sshkex.cipher_keys")
+
+// The client's half of a curve25519 exchange: its ephemeral public key.
+//
+// The SECRET is the caller's, drawn from the caller's randomness, and
+// handed back in every call that needs it.  A `core`-shaped module has
+// no randomness and a client that let a library generate its ephemeral
+// key cannot put one in a hardware token.
+pub fn kex_ecdh_init(client_public: [u8], out: [u8]) -> Int []
+    todo("ssh-nv.sshkex.kex_ecdh_init")
+
+// The server's reply: its host key, its ephemeral public key, and its
+// signature over the exchange hash.
+pub fn read_kex_ecdh_reply(payload: [u8]) -> Result<([u8], [u8], [u8]), SshFault> []
+    todo("ssh-nv.sshkex.read_kex_ecdh_reply")
+
+// The shared secret, as the magnitude an `mpint` carries.
+//
+// x25519-nv's scalar multiplication, with the ONE check that matters
+// around it: an all-zero result means the peer sent a low-order point,
+// and a client that carried on has a connection whose key an attacker
+// chose.  Answers a fault rather than the zeroes.
+pub fn shared_secret(client_secret: [u8], server_public: [u8],
+                     out: [u8]) -> Result<Int, SshFault> []
+    todo("ssh-nv.sshkex.shared_secret")
+
+// The whole result of one exchange.
+//
+// `previous_session_id` is empty for the first exchange and the
+// existing session id for a rekey — which is how the session id stays
+// the first exchange's hash forever.
+pub fn kex_result(client_version: Str, server_version: Str, client_kexinit: [u8],
+                  server_kexinit: [u8], host_key: [u8], client_public: [u8], server_public: [u8],
+                  shared_secret: [u8],
+                  previous_session_id: [u8]) -> Result<SshKexResult, SshFault> []
+    todo("ssh-nv.sshkex.kex_result")
+
+// Whether a server's signature over the exchange hash verifies.
+//
+// Ed25519 only; `can_complete` is what refuses anything else before the
+// exchange starts.
+pub fn verify_exchange_signature(host_key: [u8], exchange_hash: [u8],
+                                 signature: [u8]) -> Result<Bool, SshFault> []
+    todo("ssh-nv.sshkex.verify_exchange_signature")

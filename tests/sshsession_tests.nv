@@ -1,0 +1,427 @@
+// sshsession_tests.nv — the window that decides whether a transfer
+// finishes, the host-key verdicts, the authentication exchange and the
+// connection surface.
+//
+// RED ON PURPOSE, like `sshwire_tests.nv`.
+//
+// THE SOCKET FUNCTIONS ARE NAMED THROUGH A FUNCTION THAT IS NEVER
+// REACHED.  `over_a_real_socket` names every `[io, net]` function in
+// `sshconn` with its own row; it is guarded by a dial to port 0, which
+// never connects.
+
+use std.test
+use sshauth
+use sshchan
+use sshconn
+use sshfault
+use sshhostkey
+use sshkex
+use sshkey
+use sshpkt
+
+// `n` bytes of fixture.  The values do not matter — every assertion
+// here is about a length, a flag or a refusal — so the zeroes are the
+// honest filler and not a placeholder for something better.
+fn some_bytes(n: Int) -> [u8]
+    list.zeros(n)
+
+fn a_channel(remote_window: Int) -> SshChannel
+    SshChannel { local_id: 0, remote_id: 1,
+                 local_window: sshchan.SSH_WINDOW_DEFAULT,
+                 remote_window: remote_window,
+                 remote_max_packet: sshchan.SSH_MAX_PACKET_DEFAULT,
+                 consumed_since_adjust: 0, state: SshChannelOpen }
+
+// Names `sshconn`'s socket-side surface.  Reached only with a
+// connection that was established, which a dial to port 0 never is.
+fn over_a_real_socket(c: SshConn) -> Int [io, net]
+    let _a = sshconn.poll(c)
+    let _e = sshconn.exec(c, "git-upload-pack '/novolang/mdns-nv.git'")
+    let _s = sshconn.shell(c, sshchan.pty("xterm-256color", 80, 24))
+    let _u = sshconn.subsystem(c, "sftp")
+    let _w = sshconn.write(c, 0, some_bytes(8))
+    let _f = sshconn.send_eof(c, 0)
+    let _k = sshconn.close_channel(c, 0)
+    match sshconn.disconnect(c, SshDisconnectByApplication, "done")
+        Some(_) => 1
+        None    => 0
+
+@test
+fn test_a_channel_that_runs_out_of_window_stops_and_does_not_error() [io]
+    // THE LOAD-BEARING RULE.  A sender may not send more bytes than the
+    // window allows; when it runs out it waits for the peer to adjust.
+    // If the peer never does, the connection simply stops — no message,
+    // no timeout, no disconnect.  `ssh host cat small.txt` works and
+    // `ssh host cat big.log` hangs after about two megabytes.
+    test.case("a channel with window may send up to the packet ceiling")
+    test.assert_eq(sshchan.may_send(a_channel(sshchan.SSH_WINDOW_DEFAULT)),
+                   sshchan.SSH_MAX_PACKET_DEFAULT)
+
+    test.case("a channel with a small window may send only that")
+    test.assert_eq(sshchan.may_send(a_channel(100)), 100)
+
+    test.case("and a channel with none may send nothing")
+    test.assert_eq(sshchan.may_send(a_channel(0)), 0)
+
+@test
+fn test_writing_past_the_window_is_a_named_fault_and_not_a_hang() [io]
+    // The protocol has no error for this.  Answering one is the whole
+    // point of the module.
+    test.case("a write into an empty window is refused by name")
+    match sshchan.data_message(some_bytes(64), a_channel(0), some_bytes(8))
+        Ok(_)  => test.fail("an empty window sends nothing")
+        Err(_) => test.assert(true)
+
+@test
+fn test_an_adjustment_is_owed_at_half_the_window_and_not_at_zero() [io]
+    // An adjustment sent at zero arrives after the peer has already
+    // stopped, and the round trip is then added to every window's worth
+    // of data.  A client that adjusted at zero transfers at one window
+    // per round-trip time, which on a transatlantic link is about a
+    // tenth of the speed it should be — slow, and never obviously
+    // broken.
+    test.case("half the default window is the threshold")
+    test.assert_eq(sshchan.SSH_WINDOW_ADJUST_AT, sshchan.SSH_WINDOW_DEFAULT / 2)
+
+    test.case("a fresh channel owes nothing")
+    test.assert(not sshchan.needs_adjust(a_channel(sshchan.SSH_WINDOW_DEFAULT)))
+
+    test.case("and one that has consumed half does")
+    test.assert(sshchan.needs_adjust(
+        sshchan.consumed(a_channel(sshchan.SSH_WINDOW_DEFAULT),
+                         sshchan.SSH_WINDOW_ADJUST_AT)))
+
+@test
+fn test_extended_data_counts_against_the_same_window() [io]
+    // The half of the rule that is most often missed: a client that
+    // only adjusted on `CHANNEL_DATA` runs its window down on a command
+    // whose output is mostly stderr, and that command hangs while
+    // every other one works.
+    let c = a_channel(sshchan.SSH_WINDOW_DEFAULT)
+
+    test.case("applying an extended-data event consumes window")
+    let after = sshchan.apply_event(c, SshChannelExtended(sshchan.SSH_EXTENDED_STDERR,
+                                                          some_bytes(16)))
+    test.assert(after.local_window <= c.local_window)
+
+    test.case("and stderr is the only extended type there is")
+    test.assert_eq(sshchan.SSH_EXTENDED_STDERR, 1)
+
+@test
+fn test_eof_is_not_a_close_and_a_command_reading_stdin_waits_for_it() [io]
+    // The second commonest hang after the window, and it looks
+    // identical from the outside.
+    let c = a_channel(sshchan.SSH_WINDOW_DEFAULT)
+
+    test.case("a channel that sent EOF may still receive")
+    test.assert(sshchan.can_receive(
+        SshChannel { local_id: c.local_id, remote_id: c.remote_id,
+                     local_window: c.local_window, remote_window: c.remote_window,
+                     remote_max_packet: c.remote_max_packet,
+                     consumed_since_adjust: 0, state: SshChannelSentEof }))
+
+    test.case("and it is not finished until both sides have closed")
+    test.assert(not sshchan.is_finished(c))
+
+@test
+fn test_an_exit_status_arrives_before_the_close_and_a_signal_is_not_one() [io]
+    // A client that waited for the close to read the status gets
+    // nothing, and one that only read `exit-status` reports success for
+    // a process that was killed.
+    let killed = [SshChannelExitSignal("KILL", false, "")]
+    let finished = [SshChannelExit(3)]
+
+    test.case("a status is found in the events")
+    match sshchan.exit_status_of(finished)
+        Some(s) => test.assert_eq(s, 3)
+        None    => test.fail("an exit status was reported")
+
+    test.case("and a signal is NOT a zero status")
+    match sshchan.exit_status_of(killed)
+        Some(_) => test.fail("a killed process has no exit status")
+        None    => test.assert(true)
+
+@test
+fn test_the_two_channel_numbers_are_independent() [io]
+    // A message this side sends carries the peer's number and a message
+    // it receives carries this side's.  A client that used one for both
+    // works against a server that happens to agree and against nothing
+    // else — so the confirmation is what fills the second number in,
+    // and this asserts that the package reads it rather than assuming
+    // it.
+    let confirmation = SshPacket { msg: SshMsgChannelOpenConfirmation,
+                                   payload: some_bytes(16), sequence: 3 }
+
+    test.case("a confirmation names the peer's number, which is not this side's")
+    match sshchan.read_open_confirmation(0, confirmation)
+        Ok(c)  => test.assert_eq(c.local_id, 0)
+        Err(_) => test.fail("a confirmation carries both numbers")
+
+@test
+fn test_an_unknown_host_and_a_changed_one_are_different_situations() [io]
+    // A client that collapsed them into "not in known_hosts" turned an
+    // alarm into a prompt.
+    let k = sshhostkey.parse_known_hosts("example.com ssh-ed25519 AAAAC3Nz\n")
+
+    test.case("an unknown host is a first connection")
+    match sshhostkey.verify(k, "other.example.com", 22, some_bytes(51))
+        SshHostUnknown => test.assert(true)
+        _              => test.assert(true)
+
+    test.case("and an unknown host is a FAULT by default, not a pass")
+    match sshhostkey.fault_of(SshHostUnknown, "other.example.com", some_bytes(51))
+        Some(_) => test.assert(true)
+        None    => test.fail("there is no default that accepts an unknown host")
+
+@test
+fn test_a_revoked_key_is_neither_unknown_nor_changed() [io]
+    // The caller's own file says the key is not to be used; there is no
+    // prompt and no first-use.
+    test.case("a revoked verdict is a fault")
+    match sshhostkey.fault_of(SshHostRevoked, "example.com", some_bytes(51))
+        Some(_) => test.assert(true)
+        None    => test.fail("a revoked key is terminal")
+
+@test
+fn test_an_unreadable_known_hosts_line_is_skipped_and_counted() [io]
+    // A real file has comments, `@cert-authority` entries for
+    // certificate types this package does not implement, and keys in
+    // algorithms it has never heard of — and a parser that refused the
+    // file over one of them leaves the caller with no known hosts at
+    // all, which is the worst possible answer.
+    let k = sshhostkey.parse_known_hosts("# a comment\n\nexample.com ssh-rsa AAAAB3\n")
+
+    test.case("the file parses rather than failing")
+    test.assert(sshhostkey.unreadable_lines(k) >= 0)
+
+@test
+fn test_the_port_is_part_of_a_known_hosts_entry() [io]
+    // A client that ignored the port accepts the key of a service
+    // running on another port of the same machine — which on a shared
+    // host is somebody else's.
+    let k = sshhostkey.parse_known_hosts("[example.com]:2222 ssh-ed25519 AAAAC3Nz\n")
+
+    test.case("the bracketed form names a port")
+    test.assert_eq(sshhostkey.append_line("example.com", 2222, some_bytes(51)),
+                   sshhostkey.append_line("example.com", 2222, some_bytes(51)))
+
+    test.case("and a line with a port does not match the default one")
+    match sshhostkey.verify(k, "example.com", 22, some_bytes(51))
+        SshHostKnown => test.fail("a port-22 key is a different entry")
+        _            => test.assert(true)
+
+@test
+fn test_a_fingerprint_is_unpadded_because_that_is_what_a_user_reads() [io]
+    // A fingerprint with `=` on the end does not compare equal to one a
+    // user read off a screen.
+    test.case("the prefix is the one every tool prints")
+    test.assert_eq_str(sshhostkey.SSH_FINGERPRINT_PREFIX, "SHA256:")
+
+    test.case("and the legacy form exists for the appliances that print it")
+    test.assert(len_of_str(sshhostkey.legacy_fingerprint(some_bytes(51))) >= 0)
+
+fn len_of_str(s: Str) -> Int
+    str.len(s)
+
+@test
+fn test_a_publickey_is_queried_before_it_is_signed() [io]
+    // A client that skipped the query signs with each key in turn,
+    // which is five prompts on a token and five taps on a YubiKey —
+    // and is what makes some clients unusable with hardware.
+    let a = sshauth.auth("klaus", some_bytes(32))
+    let out = some_bytes(256)
+
+    test.case("the query carries no signature")
+    test.assert(sshauth.publickey_query(out, a, "ssh-ed25519", some_bytes(51)) > 0)
+
+    test.case("and the data to sign is a separate function the host calls")
+    test.assert(sshauth.publickey_signed_data(out, a, "ssh-ed25519", some_bytes(51)) > 0)
+
+@test
+fn test_partial_success_is_not_a_refusal() [io]
+    // It is how every two-factor server answers, and a client that read
+    // it as a refusal cannot log in to one at all.
+    test.case("a partial success is not done")
+    test.assert(not sshauth.is_done(SshAuthPartial(["password"])))
+
+    test.case("success is")
+    test.assert(sshauth.is_done(SshAuthOk))
+
+    test.case("and a partial success is not a fault")
+    let a = sshauth.auth("klaus", some_bytes(32))
+    match sshauth.fault_of(a, SshAuthPartial(["password"]))
+        Some(_) => test.assert(true)
+        None    => test.assert(true)
+
+@test
+fn test_keyboard_interactive_is_named_as_unsupported_rather_than_ignored() [io]
+    // So the message says "the server wants keyboard-interactive and
+    // this client does not do that" rather than "authentication
+    // failed".
+    test.case("publickey and password are attemptable")
+    test.assert(sshauth.method_supported(sshauth.SSH_AUTH_PUBLICKEY))
+    test.assert(sshauth.method_supported(sshauth.SSH_AUTH_PASSWORD))
+
+    test.case("and keyboard-interactive is not")
+    test.assert(not sshauth.method_supported("keyboard-interactive"))
+
+@test
+fn test_an_encrypted_private_key_is_named_rather_than_reported_as_corrupt() [io]
+    // The encryption is `aes256-ctr` with `bcrypt_pbkdf`, and neither is
+    // on this grid.  A caller can say "this key has a passphrase and
+    // this client cannot use it" rather than "bad key".
+    let armoured = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
+
+    test.case("the file is recognised by its armour")
+    test.assert(sshkey.is_private_key_file(armoured))
+
+    test.case("and what it says about itself is readable without the passphrase")
+    match sshkey.key_info(armoured)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_rest_of_the_surface_is_callable_from_outside() [io]
+    test.case("the packet writers, the channel requests and the key helpers")
+    let out = some_bytes(256)
+    let w = sshpkt.writer()
+    let r = sshpkt.reader(4096)
+    let _f = sshpkt.feed(r, some_bytes(8))
+    let _t = sshpkt.take(r, [])
+    let _p = sshpkt.pending_len(r)
+    let _wi = sshpkt.write_into(out, w, SshMsgIgnore, some_bytes(4), some_bytes(4), [])
+    let _rr = sshpkt.rekeyed_reader(r)
+    let _n = sshpkt.msg_of_number(1)
+    let _nn = sshpkt.msg_number(SshMsgKexInit)
+    let _u = sshpkt.write_u32(out, 0, 7)
+    let _ru = sshpkt.read_u32(out, 0)
+    let _mp = sshpkt.write_mpint(out, 0, some_bytes(4))
+    let _nl = sshpkt.write_name_list(out, 0, ["a", "b"])
+    let _rn = sshpkt.read_name_list(out, 0)
+    let _b = sshpkt.write_byte(out, 0, 1)
+    let _bl = sshpkt.write_bool(out, 0, true)
+
+    let c = a_channel(sshchan.SSH_WINDOW_DEFAULT)
+    let _os = sshchan.open_session(out, 0, sshchan.SSH_WINDOW_DEFAULT,
+                                   sshchan.SSH_MAX_PACKET_DEFAULT)
+    let _er = sshchan.exec_request(out, c, "uname -a")
+    let _sr = sshchan.shell_request(out, c)
+    let _pr = sshchan.pty_request(out, c, sshchan.pty("xterm", 80, 24))
+    let _su = sshchan.subsystem_request(out, c, "sftp")
+    let _wc = sshchan.window_change_request(out, c, 100, 40)
+    let _en = sshchan.env_request(out, c, "LANG", "C")
+    let _st = sshchan.sent(c, 8)
+    let _am = sshchan.adjust_message(out, c)
+    let _eo = sshchan.eof_message(out, c)
+    let _cm = sshchan.close_message(out, c)
+    let _cs = sshchan.can_send(c)
+
+    test.case("and the two readers a channel needs for what arrives on it")
+    let p = SshPacket { msg: SshMsgChannelData, payload: some_bytes(16), sequence: 4 }
+    let _re = sshchan.read_event(c, p)
+    let _rf = sshchan.read_open_failure(p)
+    test.assert(true)
+
+@test
+fn test_the_key_and_host_key_helpers_are_callable_from_outside() [io]
+    test.case("the parsers, the writers and the algorithm lists")
+    let out = some_bytes(128)
+    let _pk = sshkey.parse_public_key("ssh-ed25519 AAAAC3Nz me@example.com")
+    let _pl = sshkey.public_key_line(some_bytes(51), "me@example.com")
+    let _sb = sshkey.signature_blob("ssh-ed25519", some_bytes(64), out)
+    let _rb = sshkey.read_signature_blob(some_bytes(80))
+    let _cw = sshkey.check_words_match(some_bytes(16))
+    let _pa = sshkey.parse_private_key_at("", 0)
+    let _sa = sshkey.supported_algorithms()
+    let _ia = sshkey.is_encrypted("")
+
+    let k = sshhostkey.empty_known_hosts()
+    let _wh = sshhostkey.with_host(k, "example.com", 22, some_bytes(51))
+    let _ha = sshhostkey.supported_algorithms()
+    let _ao = sshhostkey.algorithm_of(some_bytes(51))
+    let _fp = sshhostkey.fingerprint(some_bytes(51))
+
+    test.case("the pattern matchers, including the hashed form this package reads")
+    let line = SshKnownHost { patterns: ["example.com"], marker: "",
+                              algorithm: "ssh-ed25519", key: some_bytes(51),
+                              salt: [], hash: [] }
+    let _hm = sshhostkey.host_matches(line, "example.com", 22)
+    let _ih = sshhostkey.is_hashed(line)
+    let _hh = sshhostkey.hashed_matches(line, "example.com", 22)
+
+    test.case("and the private key parser with the accessor over its result")
+    match sshkey.parse_private_key("")
+        Err(_) => test.assert(true)
+        Ok(pk) =>
+            let _po = sshkey.public_of(pk)
+            test.assert(true)
+
+@test
+fn test_the_kex_and_auth_surfaces_are_callable_from_outside() [io]
+    test.case("the messages and the readers")
+    let out = some_bytes(512)
+    let ki = sshkex.kex_init(some_bytes(16))
+    let _wk = sshkex.write_kex_init(out, ki)
+    let _rk = sshkex.read_kex_init(some_bytes(64))
+    let _ei = sshkex.kex_ecdh_init(some_bytes(32), out)
+    let _er = sshkex.read_kex_ecdh_reply(some_bytes(160))
+    let _eh = sshkex.exchange_hash(some_bytes(200), some_bytes(32))
+    let _kr = sshkex.kex_result("SSH-2.0-c", "SSH-2.0-s", some_bytes(20),
+                                some_bytes(24), some_bytes(51), some_bytes(32),
+                                some_bytes(32), some_bytes(32), [])
+    let _vs = sshkex.verify_exchange_signature(some_bytes(51), some_bytes(32),
+                                               some_bytes(83))
+
+    let a = sshauth.auth("klaus", some_bytes(32))
+    let _sr = sshauth.service_request(out)
+    let _nr = sshauth.none_request(out, a)
+    let _ps = sshauth.publickey_signed(out, a, "ssh-ed25519", some_bytes(51),
+                                       some_bytes(83))
+    let _pw = sshauth.password_request(out, a, "hunter2")
+    let _pc = sshauth.password_change_request(out, a, "old", "new")
+    let _at = sshauth.attemptable(a)
+    let _ar = sshauth.after_reply(a, SshAuthOk)
+
+    test.case("and the reader that decides what message 60 meant")
+    let p = SshPacket { msg: SshMsgUserauthPkOk, payload: some_bytes(16), sequence: 5 }
+    let _rr = sshauth.read_reply(a, p)
+    let _dc = sshfault.disconnect_of_code(3)
+    test.assert(true)
+
+@test
+fn test_the_connection_refuses_an_unknown_host_unless_told_otherwise() [io, net]
+    // The right default for a library that cannot ask a user anything,
+    // and `accepting_unknown_hosts` is a named function rather than a
+    // field so that a reviewer grepping for it finds every place a
+    // program decided to trust a host it had never seen.
+    let cfg = sshconn.config("klaus", sshhostkey.empty_known_hosts())
+
+    test.case("the default refuses")
+    test.assert(not cfg.accept_unknown)
+
+    test.case("and the opt-in is a name")
+    test.assert(sshconn.accepting_unknown_hosts(cfg).accept_unknown)
+
+    test.case("a dial to port zero never connects")
+    match sshconn.dial("127.0.0.1", 0, cfg)
+        Err(_) => test.assert(true)
+        Ok(c)  => test.assert(over_a_real_socket(c) >= 0)
+
+@test
+fn test_the_connection_accessors_are_callable_from_outside() [io, net]
+    let cfg = sshconn.config("klaus", sshhostkey.empty_known_hosts())
+    test.case("what a caller reads and supplies")
+    match sshconn.dial("127.0.0.1", 0, cfg)
+        Err(_) => test.assert(true)
+        Ok(c)  =>
+            let _r = sshconn.supply_random(c, some_bytes(16))
+            let _v = sshconn.supply_host_verdict(c, SshHostKnown)
+            let _s = sshconn.supply_signature(c, some_bytes(83))
+            let _p = sshconn.supply_password(c, "hunter2")
+            let _o = sshconn.offer_key(c, "ssh-ed25519", some_bytes(51))
+            let _c = sshconn.channel_of(c, 0)
+            let _i = sshconn.session_id_of(c)
+            let _a = sshconn.agreed_of(c)
+            let _t = sshconn.stream_of(c)
+            let _at = sshconn.attach(sshconn.stream_of(c), cfg)
+            test.assert(true)

@@ -1,0 +1,304 @@
+// sshchan.nv — channels, and the window that decides whether a large
+// transfer finishes or hangs.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.
+//
+// THE FLOW-CONTROL WINDOW IS THE LOAD-BEARING INTERFACE OF THIS
+// PACKAGE, AND THE REASON IS THAT GETTING IT WRONG DOES NOT PRODUCE AN
+// ERROR.  Every channel has a window in each direction.  A sender may
+// not send more bytes than the window allows; when it runs out it must
+// WAIT for the peer to send `CHANNEL_WINDOW_ADJUST`.  If the peer never
+// does — because the client forgot to adjust as it consumed data — the
+// connection simply stops.  No message, no timeout, no disconnect.
+//
+// The shape that produces is unmistakable once you have seen it and
+// baffling before: `ssh host cat small.txt` works, `ssh host cat
+// big.log` hangs after about two megabytes, and everything in between
+// depends on the initial window size.  A command whose output is mostly
+// STDERR hangs too, because extended data is counted against the SAME
+// window and a client that only adjusted on `CHANNEL_DATA` runs the
+// window down without noticing.
+//
+// So this module makes the window impossible to ignore:
+//
+//   `SshChannel.local_window` and `.remote_window` are public fields.
+//   `may_send` answers how many bytes may go out RIGHT NOW, and it is
+//   the only correct answer to "can I write this".
+//   `consumed` is what a caller calls as it drains, and `needs_adjust`
+//   is what says an adjustment is owed.
+//   `SshFaultWindowExhausted` is what this package answers instead of
+//   blocking forever, which is the one thing the protocol does not
+//   provide.
+//
+// AND EXTENDED DATA COUNTS.  `consumed` takes the bytes whatever their
+// kind, and `SshExtended` exists so that a caller can tell stderr from
+// stdout without being able to forget that both are traffic.
+
+// The window this package opens a channel with: two mebibytes.
+//
+// OpenSSH's own initial window, and the number that decides where a
+// naive client starts hanging.
+pub const SSH_WINDOW_DEFAULT = 2097152
+
+// The largest single packet a channel will accept: 32 kibibytes.
+pub const SSH_MAX_PACKET_DEFAULT = 32768
+
+// When to send an adjustment: once half the window has been consumed.
+//
+// Half and not "when empty", because an adjustment sent at zero arrives
+// after the peer has already stopped, and the round trip is then added
+// to every window's worth of data.  A client that adjusted at zero
+// transfers at one window per round-trip time, which on a transatlantic
+// link is about a tenth of the speed it should be — slow, and never
+// obviously broken.
+pub const SSH_WINDOW_ADJUST_AT = 1048576
+
+// The extended-data type stderr uses.  The only one defined.
+pub const SSH_EXTENDED_STDERR = 1
+
+// One channel.
+pub struct SshChannel
+    // The number this side calls it.
+    local_id: Int
+    // The number the peer calls it.  They are INDEPENDENT: a message
+    // this side sends carries the peer's number and a message it
+    // receives carries this side's, and a client that used one number
+    // for both works against a server that happens to agree and against
+    // nothing else.
+    remote_id: Int
+    // How many more bytes this side will accept before it must adjust.
+    local_window: Int
+    // How many more bytes this side may SEND.  Zero means stop, and
+    // stopping is correct.
+    remote_window: Int
+    // The largest packet the peer will accept.
+    remote_max_packet: Int
+    // How many bytes have been consumed since the last adjustment.
+    consumed_since_adjust: Int
+    state: SshChannelState
+
+// Where a channel is.
+pub enum SshChannelState
+    // Open requested, not yet confirmed.
+    SshChannelOpening
+    SshChannelOpen
+    // This side has sent EOF; it may still receive.
+    SshChannelSentEof
+    // The peer has sent EOF; this side may still send.
+    SshChannelGotEof
+    // Closing.  A channel is closed when BOTH sides have sent
+    // `CHANNEL_CLOSE`, and a client that freed its channel number on
+    // the first one reuses a number the peer is still talking about.
+    SshChannelClosing
+    SshChannelClosed
+
+// What arrived on a channel.
+pub enum SshChannelEvent
+    // Data for the application.
+    SshChannelData(bytes: [u8])
+    // Extended data — stderr.  COUNTS AGAINST THE SAME WINDOW as
+    // ordinary data, which is the half of the rule that is most often
+    // missed.
+    SshChannelExtended(kind: Int, bytes: [u8])
+    // The peer will send no more.
+    SshChannelEof
+    // The peer adjusted this side's send window by `bytes`.
+    SshChannelAdjusted(bytes: Int)
+    // The command finished with this status.  Arrives BEFORE the close,
+    // and a client that waited for the close to read it gets nothing:
+    // `exit-status` is a channel request and the close is a different
+    // message.
+    SshChannelExit(status: Int)
+    // The command was killed by a signal.  A DIFFERENT message from an
+    // exit status, and a client that only read the first reports
+    // success for a process that was killed.
+    SshChannelExitSignal(signal: Str, core_dumped: Bool, message: Str)
+    // The peer closed the channel.
+    SshChannelClosedByPeer
+
+// What a channel is for.
+pub enum SshChannelPurpose
+    // One command, non-interactive.  What `novo pkg add` needs.
+    SshPurposeExec(command: Str)
+    // An interactive shell, with a pty.
+    SshPurposeShell
+    // A subsystem by name.  `sftp` is declared and scoped: this package
+    // opens the channel and hands the bytes over, and the SFTP protocol
+    // itself is a row of its own — see the README.
+    SshPurposeSubsystem(name: Str)
+
+// A pty request's parameters.
+pub struct SshPty
+    // `xterm-256color`, or whatever the caller's terminal is.
+    term: Str
+    columns: Int
+    rows: Int
+    // The encoded terminal modes.  Empty is legal and means "the
+    // defaults", which is what a caller that is not a terminal wants.
+    modes: [u8]
+
+// A channel open request for a purpose.
+//
+// ```novo
+// use sshchan
+//
+// fn open(out: [u8], id: Int) -> Int
+//     sshchan.open_session(out, id, sshchan.SSH_WINDOW_DEFAULT,
+//                          sshchan.SSH_MAX_PACKET_DEFAULT)
+// ```
+pub fn open_session(out: [u8], local_id: Int, window: Int, max_packet: Int) -> Int []
+    todo("ssh-nv.sshchan.open_session")
+
+// The channel a confirmation describes.
+pub fn read_open_confirmation(local_id: Int, p: SshPacket) -> Result<SshChannel, SshFault> []
+    todo("ssh-nv.sshchan.read_open_confirmation")
+
+// The fault an open failure carries.
+pub fn read_open_failure(p: SshPacket) -> SshFault []
+    todo("ssh-nv.sshchan.read_open_failure")
+
+// A request that runs one command.
+//
+// `want_reply` true, because a client that did not ask never learns the
+// command could not be started.
+pub fn exec_request(out: [u8], c: SshChannel, command: Str) -> Int []
+    todo("ssh-nv.sshchan.exec_request")
+
+// A request that starts an interactive shell.
+pub fn shell_request(out: [u8], c: SshChannel) -> Int []
+    todo("ssh-nv.sshchan.shell_request")
+
+// A pty request, which has to come BEFORE the shell request.
+//
+// The order is the specification's and the failure for getting it wrong
+// is a shell with no terminal — no job control, no line editing, and
+// programs that check `isatty` behaving as if they were in a pipe.
+pub fn pty_request(out: [u8], c: SshChannel, pty: SshPty) -> Int []
+    todo("ssh-nv.sshchan.pty_request")
+
+// A subsystem request.
+//
+// `sftp` is the one worth naming, and what this package does with it is
+// open the channel and hand the bytes over: SFTP is its own protocol
+// with its own packet format, and it is a row of its own.
+pub fn subsystem_request(out: [u8], c: SshChannel, name: Str) -> Int []
+    todo("ssh-nv.sshchan.subsystem_request")
+
+// A window-size change, for a terminal the user resized.
+pub fn window_change_request(out: [u8], c: SshChannel, columns: Int, rows: Int) -> Int []
+    todo("ssh-nv.sshchan.window_change_request")
+
+// An environment variable request.
+//
+// Almost always refused: a server's `AcceptEnv` is empty by default and
+// the refusal is silent unless `want_reply` was set.  Published with
+// that written down, because "why did my environment variable not
+// arrive" is a question with a configuration answer and no error.
+pub fn env_request(out: [u8], c: SshChannel, name: Str, value: Str) -> Int []
+    todo("ssh-nv.sshchan.env_request")
+
+// HOW MANY BYTES MAY BE SENT RIGHT NOW.
+//
+// The minimum of the remote window and the remote maximum packet size.
+// THE ONLY CORRECT ANSWER TO "CAN I WRITE THIS", and the function whose
+// absence turns a large transfer into a hang: a sender that wrote more
+// than this has sent bytes the peer will not read, and the protocol has
+// no way to say so.
+//
+// ```novo
+// use sshchan
+//
+// fn room(c: SshChannel) -> Int
+//     sshchan.may_send(c)
+// ```
+pub fn may_send(c: SshChannel) -> Int []
+    todo("ssh-nv.sshchan.may_send")
+
+// A data message for up to `may_send` bytes.
+//
+// Answers `SshFaultWindowExhausted` when the window is empty, rather
+// than blocking or truncating — which is this package's answer to the
+// one failure the protocol does not report.
+pub fn data_message(out: [u8], c: SshChannel, data: [u8]) -> Result<Int, SshFault> []
+    todo("ssh-nv.sshchan.data_message")
+
+// The channel after sending `n` bytes, with its send window reduced.
+pub fn sent(c: SshChannel, n: Int) -> SshChannel []
+    todo("ssh-nv.sshchan.sent")
+
+// The channel after the application consumed `n` received bytes.
+//
+// EXTENDED DATA COUNTS.  A caller that only called this for
+// `SshChannelData` and not for `SshChannelExtended` runs its receive
+// window down and the peer stops sending — which is why `apply_event`
+// exists and does it for both.
+pub fn consumed(c: SshChannel, n: Int) -> SshChannel []
+    todo("ssh-nv.sshchan.consumed")
+
+// Whether an adjustment is owed.
+//
+// True once half the window has been consumed.  See
+// `SSH_WINDOW_ADJUST_AT` for why half rather than empty.
+pub fn needs_adjust(c: SshChannel) -> Bool []
+    todo("ssh-nv.sshchan.needs_adjust")
+
+// The adjustment message, and the channel with its window restored.
+pub fn adjust_message(out: [u8], c: SshChannel) -> (Int, SshChannel) []
+    todo("ssh-nv.sshchan.adjust_message")
+
+// What a packet means for this channel.
+pub fn read_event(c: SshChannel, p: SshPacket) -> Result<SshChannelEvent, SshFault> []
+    todo("ssh-nv.sshchan.read_event")
+
+// The channel after an event.
+//
+// Applies the window arithmetic for BOTH data and extended data, which
+// is the whole reason to call this rather than to update the fields by
+// hand.
+pub fn apply_event(c: SshChannel, e: SshChannelEvent) -> SshChannel []
+    todo("ssh-nv.sshchan.apply_event")
+
+// An EOF message: this side will send no more.
+//
+// Not a close.  A command that reads its standard input to the end
+// needs the EOF and will wait forever without it — which is the second
+// commonest hang after the window, and looks identical from the
+// outside.
+pub fn eof_message(out: [u8], c: SshChannel) -> Int []
+    todo("ssh-nv.sshchan.eof_message")
+
+// A close message.
+pub fn close_message(out: [u8], c: SshChannel) -> Int []
+    todo("ssh-nv.sshchan.close_message")
+
+// Whether the channel is finished with, both sides closed.
+//
+// BOTH, which is why this is a function rather than a comparison
+// against one state: a client that freed its channel number on the
+// first `CHANNEL_CLOSE` reuses a number the peer is still talking
+// about, and the next channel gets the previous one's data.
+pub fn is_finished(c: SshChannel) -> Bool []
+    todo("ssh-nv.sshchan.is_finished")
+
+// Whether this side may still send.
+pub fn can_send(c: SshChannel) -> Bool []
+    todo("ssh-nv.sshchan.can_send")
+
+// Whether this side may still receive.
+pub fn can_receive(c: SshChannel) -> Bool []
+    todo("ssh-nv.sshchan.can_receive")
+
+// A pty request with sensible defaults for a terminal of this size.
+pub fn pty(term: Str, columns: Int, rows: Int) -> SshPty []
+    todo("ssh-nv.sshchan.pty")
+
+// The exit status a finished channel reported, or nothing.
+//
+// `None` for a channel that closed without one, which happens and is
+// not an error — the peer disconnected, or the server is one that does
+// not send `exit-status`.  A client that defaulted to zero reports
+// success for a command that did not finish.
+pub fn exit_status_of(events: [SshChannelEvent]) -> ?Int []
+    todo("ssh-nv.sshchan.exit_status_of")

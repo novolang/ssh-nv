@@ -1,0 +1,230 @@
+// sshconn.nv — the half that touches the machine, and the pump that
+// drives everything above it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THIS IS THE ONLY MODULE IN THE PACKAGE WITH AN EFFECT ROW.  Seven
+// modules under `src/` are `[]` throughout, and this one is about a
+// hundred lines of moving bytes between a socket and a state machine.
+// That ratio is the argument for the `ssh-core-nv` row the README
+// RECOMMENDS TAKING.
+//
+// TWO LABELS: `[net]` for the socket and `[io]` for the row
+// `std.net`'s own `Read` and `Write` impls declare.  No `[time]` — this
+// package has no timeout of its own, because a deadline belongs to the
+// caller's socket and a library that owned one would own the caller's
+// cancellation too.  No `[rand]`, and that is the next paragraph.
+//
+// `[rand]` IS NOT IN THIS ROW AND SSH NEEDS RANDOMNESS IN THREE
+// PLACES: the KEXINIT cookie, the ephemeral X25519 secret, and the
+// padding of every single packet.  All three are arguments.  The
+// ephemeral secret is the one that matters most — a caller whose key
+// exchange key comes from a hardware source, or a test that wants a
+// recorded handshake to reproduce byte for byte, needs it to be theirs
+// — and the padding is the one that is easiest to get careless about,
+// which is why `sshpkt.write_into` names it as a parameter rather than
+// filling it in.
+//
+// `SshAction` IS THE ENUM THE HOST PUMPS, and like tls-nv's it has no
+// variant that reports something this package did.  What is different
+// here is `SshActionSign`: the signature over an authentication request
+// is an ACTION, because a developer's key is usually in `ssh-agent` or
+// on a token and not in a file this process can read.  A library that
+// took a key would serve the least common of those cases.
+
+use sshchan
+use sshpkt
+
+// A connection in progress.
+pub struct SshConn
+    stream: TcpStream
+    reader: SshReader
+    writer: SshWriter
+    // The session id, once the first key exchange is done.
+    session_id: [u8]
+    // The current key material, or empty in the clear.
+    keys: [u8]
+    // The channels open on this connection.
+    channels: [SshChannel]
+
+// What the host does next.
+pub enum SshAction
+    // Read from the socket and `feed`.
+    SshActionWantBytes(least: Int)
+    // Write these bytes to the socket.
+    SshActionSendBytes(length: Int)
+    // Draw `count` random bytes and supply them.  The KEXINIT cookie,
+    // the ephemeral secret, or a packet's padding.
+    SshActionWantRandom(count: Int, purpose: Str)
+    // Verify this host key and answer with `supply_host_verdict`.  The
+    // `known_hosts` and the policy are the caller's; see `sshhostkey`.
+    SshActionCheckHostKey(algorithm: Str, key: [u8], fingerprint: Str)
+    // SIGN THESE BYTES with the key for `algorithm`, and answer with
+    // `supply_signature`.  An action and not a call, because the key is
+    // usually in an agent or on a token — see the module comment.
+    SshActionSign(algorithm: Str, key: [u8], data: [u8])
+    // Supply a password for `user`, or decline.
+    SshActionWantPassword(user: Str, message: Str)
+    // Show this banner to the user.  Not an outcome: the exchange
+    // continues.
+    SshActionBanner(text: Str)
+    // Authenticated.  Channels may be opened.
+    SshActionReady
+    // Something arrived on a channel.
+    SshActionChannelEvent(channel: Int, event: SshChannelEvent)
+    // The peer closed cleanly.
+    SshActionClosed
+    // Something went wrong.
+    SshActionFailed(fault: SshFault)
+
+// What a connection is configured with.
+pub struct SshConfig
+    user: Str
+    // The `known_hosts` the caller loaded.  EMPTY is legal and means
+    // every host is unknown, which with the default policy means every
+    // connection is refused — which is the right default for a library
+    // that cannot ask a user anything.
+    known_hosts: SshKnownHosts
+    // Whether an unknown host is accepted.  FALSE by default, and a
+    // caller that sets it true has written down that it is doing
+    // trust-on-first-use.
+    accept_unknown: Bool
+    // The version string's software name, after `SSH-2.0-`.
+    software: Str
+    // The largest packet this side will accept.
+    packet_limit: Int
+
+// A configuration for a user.
+//
+// ```novo
+// use sshconn
+// use sshhostkey
+//
+// fn cfg(user: Str, k: SshKnownHosts) -> SshConfig
+//     sshconn.config(user, k)
+// ```
+pub fn config(user: Str, known_hosts: SshKnownHosts) -> SshConfig []
+    todo("ssh-nv.sshconn.config")
+
+// The same configuration doing trust-on-first-use.
+//
+// A named function rather than a field a caller sets, so that a
+// reviewer grepping for it finds every place a program decided to trust
+// a host it had never seen.
+pub fn accepting_unknown_hosts(c: SshConfig) -> SshConfig []
+    todo("ssh-nv.sshconn.accepting_unknown_hosts")
+
+// Open a TCP connection and begin the handshake.
+//
+// `[io, net]`.  Answers a connection that has sent its version string
+// and nothing else; the caller pumps it with `poll`.
+pub fn dial(host: Str, port: Int, cfg: SshConfig) -> Result<SshConn, SshFault> [io, net]
+    todo("ssh-nv.sshconn.dial")
+
+// Begin a handshake on a socket the caller already has.
+//
+// For a caller connecting through a proxy, a tunnel, or a descriptor it
+// inherited.
+pub fn attach(stream: TcpStream, cfg: SshConfig) -> Result<SshConn, SshFault> [io, net]
+    todo("ssh-nv.sshconn.attach")
+
+// What to do next.
+//
+// The pump.  `[io, net]`, because this is where the socket is read and
+// written; everything it decides is `[]`.
+pub fn poll(c: SshConn) -> Result<SshAction, SshFault> [io, net]
+    todo("ssh-nv.sshconn.poll")
+
+// Supply the random bytes `SshActionWantRandom` asked for.
+//
+// `[]`: handing bytes in costs nothing.  Where they come from is the
+// caller's — `std.rand`, a hardware source, or a recorded sequence in a
+// test.
+pub fn supply_random(c: SshConn, bytes: [u8]) -> SshConn []
+    todo("ssh-nv.sshconn.supply_random")
+
+// Supply the verdict `SshActionCheckHostKey` asked for.
+pub fn supply_host_verdict(c: SshConn, v: SshHostVerdict) -> SshConn []
+    todo("ssh-nv.sshconn.supply_host_verdict")
+
+// Supply the signature `SshActionSign` asked for.
+//
+// A signature BLOB — algorithm name and all — because that is what goes
+// on the wire.  `sshkey.signature_blob` builds one from raw bytes for a
+// caller whose signer answers those.
+pub fn supply_signature(c: SshConn, blob: [u8]) -> SshConn []
+    todo("ssh-nv.sshconn.supply_signature")
+
+// Supply a password, or decline by passing an empty string.
+pub fn supply_password(c: SshConn, password: Str) -> SshConn []
+    todo("ssh-nv.sshconn.supply_password")
+
+// Offer a public key for authentication.
+//
+// The caller's list, tried in order, and each one QUERIED before it is
+// signed — see `sshauth`'s module comment for why that matters with a
+// hardware token.
+pub fn offer_key(c: SshConn, algorithm: Str, key: [u8]) -> SshConn []
+    todo("ssh-nv.sshconn.offer_key")
+
+// Open a session channel and run one command.
+//
+// `[io, net]`.  What `novo pkg add` calls; see the README.
+pub fn exec(c: SshConn, command: Str) -> Result<Int, SshFault> [io, net]
+    todo("ssh-nv.sshconn.exec")
+
+// Open a session channel with a pty and start a shell.
+pub fn shell(c: SshConn, pty: SshPty) -> Result<Int, SshFault> [io, net]
+    todo("ssh-nv.sshconn.shell")
+
+// Open a session channel and start a subsystem.
+//
+// `sftp` is the name that matters, and what this gives back is a
+// channel number: the SFTP protocol is its own and is not in this
+// package.
+pub fn subsystem(c: SshConn, name: Str) -> Result<Int, SshFault> [io, net]
+    todo("ssh-nv.sshconn.subsystem")
+
+// Write to a channel, up to what its window allows.
+//
+// Answers how many bytes went, which may be FEWER than were offered and
+// may be ZERO.  A caller that ignored the answer and moved on has
+// dropped data silently; a caller that looped without polling has hung.
+// `sshchan.may_send` is what it should ask first.
+pub fn write(c: SshConn, channel: Int, data: [u8]) -> Result<Int, SshFault> [io, net]
+    todo("ssh-nv.sshconn.write")
+
+// Send EOF on a channel.
+//
+// The thing a command reading standard input waits for.  Not a close.
+pub fn send_eof(c: SshConn, channel: Int) -> ?SshFault [io, net]
+    todo("ssh-nv.sshconn.send_eof")
+
+// Close a channel.
+pub fn close_channel(c: SshConn, channel: Int) -> ?SshFault [io, net]
+    todo("ssh-nv.sshconn.close_channel")
+
+// Disconnect and close the socket.
+//
+// Sends `SSH_MSG_DISCONNECT` with a reason first, which is what tells
+// the server's log that this was a clean exit rather than a dropped
+// connection.
+pub fn disconnect(c: SshConn, reason: SshDisconnect, message: Str) -> ?SshFault [io, net]
+    todo("ssh-nv.sshconn.disconnect")
+
+// The channel with this number.
+pub fn channel_of(c: SshConn, channel: Int) -> ?SshChannel []
+    todo("ssh-nv.sshconn.channel_of")
+
+// The session id, once the handshake is done.
+pub fn session_id_of(c: SshConn) -> [u8] []
+    todo("ssh-nv.sshconn.session_id_of")
+
+// What was negotiated, for a caller that wants to log it.
+pub fn agreed_of(c: SshConn) -> ?SshAgreed []
+    todo("ssh-nv.sshconn.agreed_of")
+
+// The socket inside, for a caller that has to set an option this
+// package does not wrap.
+pub fn stream_of(c: SshConn) -> TcpStream []
+    todo("ssh-nv.sshconn.stream_of")

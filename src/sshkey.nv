@@ -1,0 +1,164 @@
+// sshkey.nv — the OpenSSH private key format, parsed with no
+// filesystem in sight.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.  The caller reads the file; this module reads the
+// bytes.
+//
+// THE FORMAT IS NOT PEM AND IT IS NOT ASN.1, WHICH IS THE FIRST THING
+// THAT SURPRISES A READER.  `-----BEGIN OPENSSH PRIVATE KEY-----` wraps
+// base64 of a container OpenSSH invented: the magic `openssh-key-v1`,
+// a cipher name, a KDF name, the KDF options, a count, the public keys
+// and then a block of private keys — all in the same length-prefixed
+// `string` encoding the wire protocol uses.  Nothing in it is DER, so
+// asn1-nv has no part in this and there is no `-----BEGIN RSA PRIVATE
+// KEY-----` path here at all.
+//
+// THE CHECK FIELD IS TWO EQUAL RANDOM INTEGERS AND IT IS THE PASSWORD
+// CHECK.  Inside the private block, two 32-bit values that must be
+// equal; they are what tells a decrypting reader that the passphrase
+// was right.  A reader that skipped them reports a corrupt key for a
+// wrong password, which is the least helpful of the two messages.
+//
+// AND THIS PACKAGE READS AN UNENCRYPTED KEY ONLY.  The encryption is
+// `aes256-ctr` with `bcrypt_pbkdf`, and neither is on this grid — the
+// README names both.  `is_encrypted` answers before anything is
+// attempted, and `SshFaultKeyEncrypted` names the KDF, so a caller can
+// say "this key has a passphrase and this client cannot use it" rather
+// than "bad key".
+
+// The armour a private key file is wrapped in.
+pub const SSH_PRIVATE_KEY_BEGIN = "-----BEGIN OPENSSH PRIVATE KEY-----"
+
+// And the end.
+pub const SSH_PRIVATE_KEY_END = "-----END OPENSSH PRIVATE KEY-----"
+
+// The magic the container starts with, NUL-terminated on the wire.
+pub const SSH_KEY_MAGIC = "openssh-key-v1"
+
+// The cipher name an unencrypted key carries.
+pub const SSH_KEY_CIPHER_NONE = "none"
+
+// One private key this package can use.
+pub struct SshPrivateKey
+    // `ssh-ed25519`.
+    algorithm: Str
+    // The public key blob, in the same form a `known_hosts` line
+    // carries.
+    public_blob: [u8]
+    // The 64-byte Ed25519 secret, which is the seed followed by the
+    // public key — the form Ed25519 implementations expect and the form
+    // OpenSSH stores.
+    secret: [u8]
+    // The comment, which is usually an email address and is what a user
+    // recognises the key by.
+    comment: Str
+
+// What a key file says about itself, before any of it is parsed.
+pub struct SshKeyInfo
+    // `none`, or the cipher the private block is encrypted with.
+    cipher: Str
+    // `none`, or `bcrypt`.
+    kdf: Str
+    // The algorithms of the public keys in the file.
+    algorithms: [Str]
+    // How many key pairs the file holds.  Almost always one; the format
+    // allows more and a reader that assumed one reads the wrong key
+    // from a file somebody generated with two.
+    count: Int
+
+// Whether text looks like an OpenSSH private key file.
+//
+// ```novo
+// use sshkey
+//
+// fn looks(text: Str) -> Bool
+//     sshkey.is_private_key_file(text)
+// ```
+pub fn is_private_key_file(text: Str) -> Bool []
+    todo("ssh-nv.sshkey.is_private_key_file")
+
+// What the file says about itself.
+//
+// Readable WITHOUT the passphrase, which is the point: a caller can
+// tell its user "this key needs a passphrase" before asking for one,
+// and can tell the difference between a key it cannot decrypt and a
+// key whose algorithm it does not implement.
+pub fn key_info(text: Str) -> Result<SshKeyInfo, SshFault> []
+    todo("ssh-nv.sshkey.key_info")
+
+// Whether the private block is encrypted.
+pub fn is_encrypted(text: Str) -> Result<Bool, SshFault> []
+    todo("ssh-nv.sshkey.is_encrypted")
+
+// Parse an unencrypted private key.
+//
+// Answers `SshFaultKeyEncrypted` naming the KDF for an encrypted one,
+// rather than a parse failure — see the module comment.
+//
+// ```novo
+// use sshfault
+// use sshkey
+//
+// fn load(text: Str) -> Result<SshPrivateKey, SshFault>
+//     sshkey.parse_private_key(text)
+// ```
+pub fn parse_private_key(text: Str) -> Result<SshPrivateKey, SshFault> []
+    todo("ssh-nv.sshkey.parse_private_key")
+
+// The `n`th key in a file that holds several.
+pub fn parse_private_key_at(text: Str, n: Int) -> Result<SshPrivateKey, SshFault> []
+    todo("ssh-nv.sshkey.parse_private_key_at")
+
+// Whether the two check integers in a decrypted private block match.
+//
+// The password check, published as its own function because it is what
+// separates "wrong passphrase" from "corrupt file" — and because when
+// the decryption row lands, this is the call that has to be made and
+// the one a first implementation leaves out.
+pub fn check_words_match(private_block: [u8]) -> Bool []
+    todo("ssh-nv.sshkey.check_words_match")
+
+// A public key blob from an `authorized_keys`-style line.
+//
+// `ssh-ed25519 AAAAC3Nz... comment` — the same encoding a
+// `known_hosts` line's key half uses, which is why this is here and not
+// in `sshhostkey`: one parser, two files.
+pub fn parse_public_key(line: Str) -> Result<([u8], Str), SshFault> []
+    todo("ssh-nv.sshkey.parse_public_key")
+
+// A public key blob as an `authorized_keys` line.
+pub fn public_key_line(blob: [u8], comment: Str) -> Str []
+    todo("ssh-nv.sshkey.public_key_line")
+
+// The public key blob of a private key.
+pub fn public_of(k: SshPrivateKey) -> [u8] []
+    todo("ssh-nv.sshkey.public_of")
+
+// Sign data with a private key.
+//
+// The ONE function in this package that touches a private key's bytes,
+// and `[]`, because Ed25519 signing is arithmetic.  Published so that a
+// caller holding a key in memory has a signer; a caller whose key is in
+// an agent or a hardware token answers `sshconn.SshActionSign` from
+// its own and never calls this.
+pub fn sign(k: SshPrivateKey, data: [u8], out: [u8]) -> Result<Int, SshFault> []
+    todo("ssh-nv.sshkey.sign")
+
+// A signature blob, which is the algorithm name and the signature as
+// two `string`s.
+//
+// Not the raw 64 bytes: every signature on the wire in SSH carries its
+// own algorithm name, and a client that sent the bare bytes sends
+// something no server parses.
+pub fn signature_blob(algorithm: Str, signature: [u8], out: [u8]) -> Int []
+    todo("ssh-nv.sshkey.signature_blob")
+
+// The algorithm and signature inside a signature blob.
+pub fn read_signature_blob(blob: [u8]) -> Result<(Str, [u8]), SshFault> []
+    todo("ssh-nv.sshkey.read_signature_blob")
+
+// The key algorithms this package can use for authentication.
+pub fn supported_algorithms() -> [Str] []
+    todo("ssh-nv.sshkey.supported_algorithms")

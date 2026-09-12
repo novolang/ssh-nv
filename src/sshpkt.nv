@@ -1,0 +1,310 @@
+// sshpkt.nv — the binary packet protocol (RFC 4253 § 6) and the four
+// wire encodings everything above is written in.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.  Bytes in, bytes out.
+//
+// THE PACKET LENGTH IS ENCRYPTED, AND THAT IS WHY THE READER IS A
+// STATE MACHINE.  `chacha20-poly1305@openssh.com` — the cipher OpenSSH
+// prefers and this package's default — uses TWO keys: K_1 encrypts the
+// four-byte length field and K_2 encrypts the payload.  So a reader
+// cannot look at the first four bytes and learn how many more to read;
+// it has to decrypt them first, with a key and a sequence number, and
+// only then does it know the frame size.  A reader written against
+// plaintext framing reads garbage and then reads the wrong number of
+// bytes forever.
+//
+// `SshReader` is therefore fed and drained rather than asked to parse a
+// buffer: `feed` takes whatever arrived, `step` says whether a whole
+// packet is there, and `take` hands it over.  The same shape csv-nv and
+// flate-nv use, for the same reason.
+//
+// THE SEQUENCE NUMBER IS NOT IN THE PACKET.  Both sides count packets
+// from zero and the count goes into the nonce and the MAC; nothing on
+// the wire carries it.  A client that reset the count on a rekey — or
+// that failed to — desynchronises, and the symptom is a MAC failure on
+// the first packet after the rekey rather than anything about counting.
+// `SshReader.sequence` and `SshWriter.sequence` are public so a test can
+// pin both.
+
+// The smallest a packet may be, including the length field: 16 bytes.
+pub const SSH_PACKET_MIN = 16
+
+// The largest packet RFC 4253 § 6.1 says an implementation must
+// accept: 35000 bytes.
+pub const SSH_PACKET_MAX = 35000
+
+// The smallest amount of padding a packet may carry: 4 bytes.
+//
+// And the reason it is a floor rather than a fill: the padding is
+// random, it is inside the encryption, and it is what stops a passive
+// observer from reading the exact length of a password from the
+// packet size.
+pub const SSH_PADDING_MIN = 4
+
+// The length of the encrypted length field, in bytes.
+pub const SSH_LENGTH_BYTES = 4
+
+// How many bytes or seconds a connection may run before it must rekey.
+//
+// One gibibyte, which is RFC 4253 § 9's recommendation and is a real
+// limit rather than a ceremony: the ChaCha20 block counter and the
+// sequence number both have finite room, and a connection that never
+// rekeyed reuses a nonce.
+pub const SSH_REKEY_BYTES = 1073741824
+
+// The message numbers this package reads and writes.
+//
+// An enum and not an integer, because the numbers are grouped by
+// meaning — 1 to 19 transport, 20 to 29 key exchange, 30 to 49
+// method-specific, 50 to 79 authentication, 80 to 127 connection — and
+// a client that met an unknown one in the 30-to-49 range must interpret
+// it according to the method it negotiated rather than ignore it.
+pub enum SshMsg
+    SshMsgDisconnect
+    SshMsgIgnore
+    SshMsgUnimplemented
+    SshMsgDebug
+    SshMsgServiceRequest
+    SshMsgServiceAccept
+    SshMsgExtInfo
+    SshMsgKexInit
+    SshMsgNewKeys
+    // 30 and 31 in a curve25519 exchange.  The numbers are
+    // METHOD-SPECIFIC: the same 30 is something else under a different
+    // key exchange, which is why they are named after what they do here
+    // rather than after their number.
+    SshMsgKexEcdhInit
+    SshMsgKexEcdhReply
+    SshMsgUserauthRequest
+    SshMsgUserauthFailure
+    SshMsgUserauthSuccess
+    SshMsgUserauthBanner
+    // 60 under `publickey`: the server saying a key WOULD be accepted,
+    // without having seen a signature.  Under `password` the same 60 is
+    // a password-change request.
+    SshMsgUserauthPkOk
+    SshMsgGlobalRequest
+    SshMsgRequestSuccess
+    SshMsgRequestFailure
+    SshMsgChannelOpen
+    SshMsgChannelOpenConfirmation
+    SshMsgChannelOpenFailure
+    SshMsgChannelWindowAdjust
+    SshMsgChannelData
+    SshMsgChannelExtendedData
+    SshMsgChannelEof
+    SshMsgChannelClose
+    SshMsgChannelRequest
+    SshMsgChannelSuccess
+    SshMsgChannelFailure
+    SshMsgOther(number: Int)
+
+// One decoded packet: its message number and its payload.
+pub struct SshPacket
+    msg: SshMsg
+    // The payload WITHOUT the message number byte, so that every parser
+    // above reads from offset zero.
+    payload: [u8]
+    // The sequence number this packet was, which is what its MAC
+    // covered.
+    sequence: Int
+
+// A packet reader, fed and drained.
+pub struct SshReader
+    // Bytes that have arrived and not yet been made into a packet.
+    buffer: [u8]
+    // How many packets have been read.  Counted from zero and NOT sent
+    // on the wire.
+    sequence: Int
+    // Zero while the connection is in the clear, 64 once
+    // `chacha20-poly1305@openssh.com` is in effect: the two 32-byte
+    // keys, K_2 then K_1, exactly as OpenSSH's own key material is laid
+    // out.
+    key_len: Int
+    // The ceiling a packet may not exceed.
+    limit: Int
+
+// A packet writer.
+pub struct SshWriter
+    sequence: Int
+    key_len: Int
+    // How many bytes have gone out under the current keys, for the
+    // rekey rule.
+    bytes_sent: Int
+
+// What a reader found.
+pub enum SshReadStep
+    // A whole packet.
+    SshReadPacket(packet: SshPacket)
+    // Not enough bytes yet; `least` more are needed before there is any
+    // point looking again.
+    SshReadNeedBytes(least: Int)
+    // The bytes are not a packet.
+    SshReadFault(fault: SshFault)
+
+// A reader in the clear, before any keys are agreed.
+//
+// ```novo
+// use sshpkt
+//
+// fn r() -> SshReader
+//     sshpkt.reader(sshpkt.SSH_PACKET_MAX)
+// ```
+pub fn reader(limit: Int) -> SshReader []
+    todo("ssh-nv.sshpkt.reader")
+
+// A writer in the clear.
+pub fn writer() -> SshWriter []
+    todo("ssh-nv.sshpkt.writer")
+
+// Hand the reader bytes that arrived.
+pub fn feed(r: SshReader, bytes: [u8]) -> SshReader []
+    todo("ssh-nv.sshpkt.feed")
+
+// Whether a whole packet is available, and what it is.
+//
+// Takes the keys because the LENGTH is encrypted: there is no way to
+// answer "is a whole packet here" without decrypting four bytes under
+// K_1 first.  `keys` is empty while the connection is in the clear.
+pub fn step(r: SshReader, keys: [u8]) -> SshReadStep []
+    todo("ssh-nv.sshpkt.step")
+
+// The reader with the packet `step` found removed.
+pub fn take(r: SshReader, keys: [u8]) -> SshReader []
+    todo("ssh-nv.sshpkt.take")
+
+// How many bytes are buffered and not yet a packet.
+pub fn pending_len(r: SshReader) -> Int []
+    todo("ssh-nv.sshpkt.pending_len")
+
+// Frame a payload into a packet, into the caller's buffer.
+//
+// `padding` is the caller's random bytes, at least `SSH_PADDING_MIN` of
+// them: a `core`-shaped module has no randomness, and the padding is
+// what hides the length of a password from a passive observer, so it
+// matters that the caller knows it is supplying it.
+//
+// ```novo
+// use sshfault
+// use sshpkt
+//
+// fn frame(w: SshWriter, m: SshMsg, p: [u8], pad: [u8], out: [u8]) -> Result<Int, SshFault>
+//     sshpkt.write_into(out, w, m, p, pad, [])
+// ```
+pub fn write_into(out: [u8], w: SshWriter, msg: SshMsg, payload: [u8], padding: [u8],
+                  keys: [u8]) -> Result<Int, SshFault> []
+    todo("ssh-nv.sshpkt.write_into")
+
+// How many bytes a payload will occupy once framed.
+//
+// So the caller can size `out` once.  The answer depends on the cipher,
+// because the padding is rounded to the block size — eight bytes for
+// ChaCha20-Poly1305, which is not a block cipher but is specified to
+// pad as if it were.
+pub fn framed_len(payload_len: Int, keys: [u8]) -> Int []
+    todo("ssh-nv.sshpkt.framed_len")
+
+// How much padding a payload needs.
+//
+// Published because it is what the caller has to draw random bytes for,
+// and getting it wrong is a packet the peer refuses with no explanation.
+pub fn padding_len(payload_len: Int, keys: [u8]) -> Int []
+    todo("ssh-nv.sshpkt.padding_len")
+
+// The writer after a packet, with its sequence and byte count advanced.
+pub fn wrote(w: SshWriter, framed_len: Int) -> SshWriter []
+    todo("ssh-nv.sshpkt.wrote")
+
+// Whether the connection has run long enough to need a rekey.
+//
+// A gibibyte of traffic, or a peer that asked.  A connection that never
+// rekeyed reuses a nonce, which is the failure mode that has no symptom
+// at all until somebody with the traffic capture notices.
+pub fn needs_rekey(w: SshWriter) -> Bool []
+    todo("ssh-nv.sshpkt.needs_rekey")
+
+// The reader and writer after a rekey.
+//
+// THE SEQUENCE NUMBERS DO NOT RESET.  They keep counting across the
+// rekey, which is the specification's rule and the one that catches
+// people: a client that reset them desynchronises and the symptom is a
+// MAC failure on the first packet afterwards, which reads as a
+// cryptographic problem rather than as a counting one.
+pub fn rekeyed_reader(r: SshReader) -> SshReader []
+    todo("ssh-nv.sshpkt.rekeyed_reader")
+
+// The writer after a rekey.
+pub fn rekeyed_writer(w: SshWriter) -> SshWriter []
+    todo("ssh-nv.sshpkt.rekeyed_writer")
+
+// The message a number names.
+pub fn msg_of_number(n: Int) -> SshMsg []
+    todo("ssh-nv.sshpkt.msg_of_number")
+
+// The number a message is.
+pub fn msg_number(m: SshMsg) -> Int []
+    todo("ssh-nv.sshpkt.msg_number")
+
+// Whether a message number is method-specific, 30 to 49.
+//
+// The check a client makes before deciding it does not understand a
+// packet: in that range the SAME number means different things under
+// different key exchange methods, so "unknown" depends on what was
+// negotiated.
+pub fn is_method_specific(n: Int) -> Bool []
+    todo("ssh-nv.sshpkt.is_method_specific")
+
+// Write a 32-bit big-endian length-prefixed string.
+//
+// The one encoding everything in SSH is made of: a `string` is four
+// bytes of length and then that many bytes, and it is BINARY — a host
+// key, a signature and a username are all `string`s and only the last
+// of them is text.
+pub fn write_string(out: [u8], at: Int, s: [u8]) -> Int []
+    todo("ssh-nv.sshpkt.write_string")
+
+// Read one, answering the bytes and where the next field starts.
+pub fn read_string(src: [u8], at: Int) -> Result<([u8], Int), SshFault> []
+    todo("ssh-nv.sshpkt.read_string")
+
+// Write a 32-bit big-endian integer.
+pub fn write_u32(out: [u8], at: Int, v: Int) -> Int []
+    todo("ssh-nv.sshpkt.write_u32")
+
+// Read one.
+pub fn read_u32(src: [u8], at: Int) -> Result<(Int, Int), SshFault> []
+    todo("ssh-nv.sshpkt.read_u32")
+
+// Write an `mpint`: a signed big-endian integer with no leading zero
+// bytes — except one, when the top bit of the first byte would
+// otherwise make it negative.
+//
+// That exception is the encoding's whole difficulty and it is why this
+// is a named function rather than four lines at each call site: a
+// shared secret whose first byte is above 0x7F needs a zero in front
+// of it, and a client that omitted one produces an exchange hash that
+// differs from the server's about half the time.
+pub fn write_mpint(out: [u8], at: Int, magnitude: [u8]) -> Int []
+    todo("ssh-nv.sshpkt.write_mpint")
+
+// How many bytes an `mpint` will take.
+pub fn mpint_len(magnitude: [u8]) -> Int []
+    todo("ssh-nv.sshpkt.mpint_len")
+
+// Write a name-list: comma-separated ASCII names, as one `string`.
+pub fn write_name_list(out: [u8], at: Int, names: [Str]) -> Int []
+    todo("ssh-nv.sshpkt.write_name_list")
+
+// Read one.
+pub fn read_name_list(src: [u8], at: Int) -> Result<([Str], Int), SshFault> []
+    todo("ssh-nv.sshpkt.read_name_list")
+
+// Write one byte.
+pub fn write_byte(out: [u8], at: Int, v: Int) -> Int []
+    todo("ssh-nv.sshpkt.write_byte")
+
+// Write a boolean, which on the wire is one byte that is zero or not.
+pub fn write_bool(out: [u8], at: Int, v: Bool) -> Int []
+    todo("ssh-nv.sshpkt.write_bool")

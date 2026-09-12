@@ -1,0 +1,158 @@
+// sshfault.nv — what can go wrong, as values, and the codes the peer
+// sends before it hangs up.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.
+//
+// A DISCONNECT CARRIES A REASON AND ALMOST NOTHING READS IT.  RFC 4253
+// § 11.1 gives fifteen numbered reasons and a human-readable string,
+// and the difference between "no matching key exchange method" and
+// "host key not verifiable" is the difference between a configuration
+// problem and an attack.  A client that reported "connection closed"
+// for both has told its user nothing.
+//
+// AND A DEADLOCK IS NOT A FAULT, WHICH IS WHY IT IS NAMED HERE
+// ANYWAY.  `SshFaultWindowExhausted` is what this package reports
+// instead of blocking forever when a channel's flow-control window
+// runs out and the peer has not adjusted it — see `sshchan`.  The
+// protocol has no error for it; it simply stops, and a client that
+// waited is a client that hangs on large files and works on small
+// ones.
+
+// Why the peer hung up: RFC 4253 § 11.1's reason codes.
+pub enum SshDisconnect
+    SshDisconnectHostNotAllowed
+    SshDisconnectProtocolError
+    // No algorithm in common.  A configuration problem and not an
+    // attack, and the commonest one now that servers have dropped
+    // `ssh-rsa` with SHA-1.
+    SshDisconnectKeyExchangeFailed
+    SshDisconnectReserved
+    SshDisconnectMacError
+    SshDisconnectCompressionError
+    SshDisconnectServiceNotAvailable
+    SshDisconnectProtocolVersionNotSupported
+    // The peer could not verify the HOST key — which, from a client, is
+    // the server saying it does not trust what the client sent, and is
+    // worth telling apart from every other refusal.
+    SshDisconnectHostKeyNotVerifiable
+    SshDisconnectConnectionLost
+    SshDisconnectByApplication
+    SshDisconnectTooManyConnections
+    SshDisconnectAuthCancelled
+    SshDisconnectNoMoreAuthMethods
+    SshDisconnectIllegalUserName
+    SshDisconnectOther(code: Int)
+
+// What went wrong.
+pub enum SshFault
+    // The server's version string was not `SSH-2.0-...`.  Version 1 is
+    // refused by name rather than attempted, because it is a different
+    // protocol with known breaks in it.
+    SshFaultBadVersionString(got: Str)
+    // A packet that is not the shape RFC 4253 § 6 gives: a length
+    // outside the bounds, padding below four bytes, or a total that is
+    // not a multiple of the cipher block size.
+    SshFaultBadPacket(detail: Str)
+    // A packet longer than the caller's ceiling.  A ceiling and not a
+    // suggestion: the length field is 32 bits and it arrives before
+    // anything is authenticated, so a client without one allocates
+    // whatever the first four bytes said.
+    SshFaultPacketTooLarge(length: Int, limit: Int)
+    // The Poly1305 tag did not match.  The connection ends here and is
+    // not retried: a failed MAC is either corruption or an attacker,
+    // and continuing tells the attacker which.
+    SshFaultBadMac(sequence: Int)
+    // No algorithm in common, naming which list ran out.
+    SshFaultNoCommonAlgorithm(kind: Str)
+    // The exchange hash did not match the signature over it.
+    SshFaultBadExchangeSignature
+    // The host key was refused by the caller's verifier.
+    SshFaultHostKeyRefused(host: Str, fingerprint: Str)
+    // THE HOST KEY CHANGED.  Told apart from "unknown" by name, because
+    // they are different situations: unknown is a first connection and
+    // changed is either a rebuilt server or the attack `known_hosts`
+    // exists to catch.
+    SshFaultHostKeyChanged(host: Str, expected: Str, got: Str)
+    // The `known_hosts` entry is a `@revoked` marker.  Never a prompt
+    // and never a TOFU: the caller's own file says this key is not to
+    // be used.
+    SshFaultHostKeyRevoked(host: Str, fingerprint: Str)
+    // Every authentication method the server offered was refused or
+    // unsupported, naming what it offered.
+    SshFaultAuthFailed(methods: [Str])
+    // The server accepted some of the methods and wants another.  NOT a
+    // failure: `partial success` is a two-factor server saying "now the
+    // second one", and a client that treated it as a refusal cannot log
+    // in to one at all.
+    SshFaultAuthPartial(remaining: [Str])
+    // The private key file is not the `openssh-key-v1` container, or is
+    // a format this package does not read.
+    SshFaultBadPrivateKey(detail: Str)
+    // The private key is encrypted and this package has no key
+    // derivation for it — see the README: bcrypt_pbkdf is the missing
+    // row.
+    SshFaultKeyEncrypted(kdf: Str)
+    // The server refused to open a channel, with its own reason.
+    SshFaultChannelRefused(reason: Int, detail: Str)
+    // THE FLOW-CONTROL WINDOW RAN OUT and the peer has not adjusted it.
+    // The protocol has no error for this: it simply stops.  This is
+    // what this package answers instead of blocking forever, and it is
+    // the whole argument of `sshchan`.
+    SshFaultWindowExhausted(channel: Int, bytes_sent: Int)
+    // The peer disconnected, with its reason and its message.
+    SshFaultDisconnected(reason: SshDisconnect, message: Str)
+    // The socket failed.
+    SshFaultTransport(detail: Str)
+    // The peer closed mid-handshake.  A truncation and not an end:
+    // nothing was agreed, so there is nothing to close cleanly.
+    SshFaultTruncated(at: Str)
+    // The handshake wanted an algorithm this package has no primitive
+    // for.  See the README's "What is missing": RSA is the one that
+    // matters.
+    SshFaultNoPrimitive(algorithm: Str)
+
+// The reason a code names.
+pub fn disconnect_of_code(code: Int) -> SshDisconnect []
+    todo("ssh-nv.sshfault.disconnect_of_code")
+
+// The code a reason is on the wire.
+//
+// ```novo
+// use sshfault
+//
+// fn code(r: SshDisconnect) -> Int
+//     sshfault.disconnect_code(r)
+// ```
+pub fn disconnect_code(r: SshDisconnect) -> Int []
+    todo("ssh-nv.sshfault.disconnect_code")
+
+// Whether a fault is worth another connection attempt.
+//
+// A transport failure is; a host-key change is NOT, ever, and that is
+// the point of the function — a client that retried past one has
+// retried past the check the whole protocol is built on.
+pub fn retry_would_help(f: SshFault) -> Bool []
+    todo("ssh-nv.sshfault.retry_would_help")
+
+// Whether a fault is the caller's configuration rather than the
+// network's.
+//
+// `NoCommonAlgorithm`, `AuthFailed` and `BadPrivateKey` are; a
+// truncation is not.  Published because the two want different
+// messages: one says "fix this", the other says "try again".
+pub fn is_configuration(f: SshFault) -> Bool []
+    todo("ssh-nv.sshfault.is_configuration")
+
+// What went wrong, in one line.
+//
+// ```novo
+// use sshfault
+//
+// fn report(f: SshFault) -> Str
+//     f.message()
+// ```
+impl Error for SshFault
+    fn message(self) -> Str
+        todo("ssh-nv.sshfault.SshFault.message")

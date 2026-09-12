@@ -1,0 +1,195 @@
+// sshauth.nv — proving who you are, without this package ever holding
+// a private key.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT, AND THE SIGNATURE IS AN ARGUMENT.  That is the
+// decision this module is built on.  A developer's SSH key is usually
+// NOT in a file this process can read: it is in `ssh-agent`, on a
+// hardware token, behind a PIN, or in a keychain that will do a
+// signature and will not export a secret.  A library whose
+// authentication took a key would work for one of those cases and would
+// be unusable for the other four, and the one it works for is the least
+// common.
+//
+// So `sshauth` never signs.  `publickey_signed_data` builds the bytes
+// that have to be signed, the host signs them however it can, and
+// `publickey_signed` puts the signature back in.  `sshkey.sign` is what
+// a caller with a key in memory uses, an agent client is what a caller
+// with `ssh-agent` uses, and neither of them is this module's business.
+//
+// THE TWO-PHASE QUERY IS WHY A CLIENT WITH FIVE KEYS DOES NOT DO FIVE
+// SIGNATURES.  RFC 4252 § 7 lets a client send a `publickey` request
+// with NO signature, meaning "would this key be accepted"; the server
+// answers `PK_OK` or a failure.  A client that skipped it signs with
+// each key in turn, which is five prompts on a token and five taps on a
+// YubiKey — and is what makes some clients unusable with hardware.
+//
+// AND PARTIAL SUCCESS IS NOT A FAILURE.  `SSH_MSG_USERAUTH_FAILURE`
+// with the partial-success flag set means "that one worked, now do
+// another": it is how every two-factor server answers, and a client
+// that read it as a refusal cannot log in to one at all.
+
+// The service name a user authentication is for.
+pub const SSH_SERVICE_USERAUTH = "ssh-userauth"
+
+// The service name that follows it.
+pub const SSH_SERVICE_CONNECTION = "ssh-connection"
+
+// The method that asks what the server will accept.
+pub const SSH_AUTH_NONE = "none"
+
+// Public key authentication.
+pub const SSH_AUTH_PUBLICKEY = "publickey"
+
+// Password authentication.
+pub const SSH_AUTH_PASSWORD = "password"
+
+// What the server said about an attempt.
+pub enum SshAuthReply
+    // Authenticated.  The connection protocol starts.
+    SshAuthOk
+    // Refused, and these are the methods that may still be tried.
+    SshAuthFailed(methods: [Str])
+    // THAT METHOD WORKED AND ANOTHER IS NEEDED.  A two-factor server's
+    // normal answer, and a different thing from a refusal — the methods
+    // named are what is left to do rather than what to try instead.
+    SshAuthPartial(remaining: [Str])
+    // The server would accept this key: send the signed request.  The
+    // answer to a query with no signature in it.
+    SshAuthKeyAccepted(algorithm: Str, key: [u8])
+    // A banner, which is text to show the user and is NOT an outcome —
+    // it arrives at any point and the exchange continues.
+    SshAuthBanner(text: Str)
+    // The password is correct and must be changed before the session
+    // starts.  Rare, and named because the message number it arrives on
+    // is the same 60 that `PK_OK` uses under `publickey` — the same
+    // byte, two meanings, decided by the method in flight.
+    SshAuthPasswordExpired(message: Str)
+
+// One authentication attempt in progress.
+pub struct SshAuth
+    user: Str
+    // The session id from the first key exchange, which every
+    // `publickey` signature is over and which is what binds an
+    // authentication to THIS connection rather than to a replay of one.
+    session_id: [u8]
+    // What the server has said it will accept, from the last failure.
+    methods: [Str]
+    // The method currently in flight, which is what decides whether a
+    // message 60 is `PK_OK` or a password-change request.
+    in_flight: Str
+
+// A fresh authentication for a user on a session.
+//
+// ```novo
+// use sshauth
+//
+// fn a(user: Str, session: [u8]) -> SshAuth
+//     sshauth.auth(user, session)
+// ```
+pub fn auth(user: Str, session_id: [u8]) -> SshAuth []
+    todo("ssh-nv.sshauth.auth")
+
+// The `ssh-userauth` service request that has to come first.
+pub fn service_request(out: [u8]) -> Int []
+    todo("ssh-nv.sshauth.service_request")
+
+// A `none` request, which asks the server what it will accept.
+//
+// Not a way in, and occasionally one: a server with no authentication
+// configured answers `SshAuthOk` to it, which is worth handling rather
+// than treating as impossible.
+pub fn none_request(out: [u8], a: SshAuth) -> Int []
+    todo("ssh-nv.sshauth.none_request")
+
+// A `publickey` QUERY: the key, and no signature.
+//
+// The first half of the two-phase exchange — see the module comment for
+// why a client with five keys and a hardware token needs it.
+//
+// ```novo
+// use sshauth
+//
+// fn ask(out: [u8], a: SshAuth, alg: Str, key: [u8]) -> Int
+//     sshauth.publickey_query(out, a, alg, key)
+// ```
+pub fn publickey_query(out: [u8], a: SshAuth, algorithm: Str, key: [u8]) -> Int []
+    todo("ssh-nv.sshauth.publickey_query")
+
+// The bytes a `publickey` request has to be signed over.
+//
+// The session id, then the request itself with the signature flag set:
+// six fields, in one order, and the session id at the front is what
+// stops a signature captured on one connection from being replayed on
+// another.
+//
+// Its own function because it is the thing the host has to sign and the
+// host is not this module — and because a test can assert these bytes
+// against a recorded exchange with no key anywhere.
+pub fn publickey_signed_data(out: [u8], a: SshAuth, algorithm: Str, key: [u8]) -> Int []
+    todo("ssh-nv.sshauth.publickey_signed_data")
+
+// A `publickey` request carrying a signature the host produced.
+//
+// The second half.  `signature` is a signature BLOB —
+// `sshkey.signature_blob`'s output, algorithm name and all — and not
+// raw signature bytes, because that is what goes on the wire.
+pub fn publickey_signed(out: [u8], a: SshAuth, algorithm: Str, key: [u8], signature: [u8]) -> Int []
+    todo("ssh-nv.sshauth.publickey_signed")
+
+// A `password` request.
+//
+// `[]`, and the password is a `Str` the caller holds.  This package
+// does no prompting, no echo suppression and no reading: those are a
+// terminal's business and a library that did them would need `[io]` for
+// a function most callers do not use.
+pub fn password_request(out: [u8], a: SshAuth, password: Str) -> Int []
+    todo("ssh-nv.sshauth.password_request")
+
+// A password-change request, for the case the server demands one.
+pub fn password_change_request(out: [u8], a: SshAuth, old_password: Str,
+                               new_password: Str) -> Int []
+    todo("ssh-nv.sshauth.password_change_request")
+
+// What the server's reply means.
+//
+// `in_flight` decides how message 60 is read: `PK_OK` under
+// `publickey`, a password-change request under `password`.  The same
+// byte, two meanings, and the method in flight is the only thing that
+// tells them apart — which is why `SshAuth` carries it rather than the
+// caller remembering.
+pub fn read_reply(a: SshAuth, p: SshPacket) -> Result<SshAuthReply, SshFault> []
+    todo("ssh-nv.sshauth.read_reply")
+
+// The authentication after a reply.
+pub fn after_reply(a: SshAuth, r: SshAuthReply) -> SshAuth []
+    todo("ssh-nv.sshauth.after_reply")
+
+// Whether a method is one this package can attempt.
+//
+// `publickey` and `password`.  `keyboard-interactive` is NOT — see the
+// README: it is a prompt loop the library would have to drive, and the
+// row for it is a caller-supplied prompt callback that this interface
+// does not have.
+pub fn method_supported(method: Str) -> Bool []
+    todo("ssh-nv.sshauth.method_supported")
+
+// The methods still worth trying, from what the server offered and
+// what this package can do.
+//
+// Answers EMPTY when the server offers only methods this package
+// cannot attempt, which is a `SshFaultAuthFailed` naming the server's
+// own list — so the message says "the server wants
+// keyboard-interactive and this client does not do that" rather than
+// "authentication failed".
+pub fn attemptable(a: SshAuth) -> [Str] []
+    todo("ssh-nv.sshauth.attemptable")
+
+// Whether the exchange is finished, one way or the other.
+pub fn is_done(r: SshAuthReply) -> Bool []
+    todo("ssh-nv.sshauth.is_done")
+
+// The fault a final reply implies, or nothing for success.
+pub fn fault_of(a: SshAuth, r: SshAuthReply) -> ?SshFault []
+    todo("ssh-nv.sshauth.fault_of")

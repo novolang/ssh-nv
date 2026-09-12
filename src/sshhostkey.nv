@@ -1,0 +1,201 @@
+// sshhostkey.nv — is this the server you meant, and what `known_hosts`
+// says about it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `[]` THROUGHOUT.  The file is the caller's; this module reads text it
+// is handed and answers a verdict.
+//
+// THERE IS NO DEFAULT AND `accept_any` IS NOT IN THIS MODULE.  The host
+// key check is the whole of SSH's authentication of the server: without
+// it the key exchange is a perfectly good encrypted channel to whoever
+// answered.  So `SshHostVerdict` has no "probably fine" and `verify`
+// takes a `known_hosts` the caller loaded; a caller that wants
+// trust-on-first-use writes three lines around `SshHostUnknown` and can
+// be seen to have written them.
+//
+// UNKNOWN AND CHANGED ARE DIFFERENT SITUATIONS AND GET DIFFERENT
+// VARIANTS.  Unknown is a first connection.  Changed is either a
+// rebuilt server or the attack this file exists to catch, and the
+// second one is why OpenSSH prints forty lines of warning.  A client
+// that collapsed them into "not in known_hosts" turned an alarm into a
+// prompt.
+//
+// AND A `@revoked` MARKER IS NEITHER.  The caller's own file says the
+// key is not to be used; there is no prompt and no first-use, and
+// `SshHostRevoked` is terminal.
+
+// The fingerprint form every human-facing tool prints:
+// `SHA256:` and then unpadded base64 of the SHA-256 of the key blob.
+pub const SSH_FINGERPRINT_PREFIX = "SHA256:"
+
+// One `known_hosts` line, parsed.
+pub struct SshKnownHost
+    // The host patterns, before any hashing: `example.com`,
+    // `[example.com]:2222`, `*.internal`, or `!exception`.
+    patterns: [Str]
+    // A `@cert-authority` or `@revoked` marker, or empty.
+    marker: Str
+    // The key's algorithm name.
+    algorithm: Str
+    // The key blob.
+    key: [u8]
+    // For a HASHED line, the salt and the hash; empty otherwise.  A
+    // hashed line's patterns are not readable, which is the point of
+    // the form: somebody who takes a laptop cannot read the list of
+    // machines it connects to.
+    salt: [u8]
+    hash: [u8]
+
+// A parsed `known_hosts`.
+pub struct SshKnownHosts
+    lines: [SshKnownHost]
+
+// What the file says about a host and a key.
+pub enum SshHostVerdict
+    // The key is in the file for this host.
+    SshHostKnown
+    // The host is not in the file at all.  A first connection, and the
+    // one case where a caller's policy decides.
+    SshHostUnknown
+    // The host is in the file WITH A DIFFERENT KEY.  Either a rebuilt
+    // server or the attack this file exists to catch, and never a
+    // prompt that defaults to yes.
+    SshHostChanged(expected: Str)
+    // The file says this key is revoked.  Terminal.
+    SshHostRevoked
+    // The host matched a `!pattern` exception, so the entries that
+    // would otherwise have matched do not apply.
+    SshHostExcluded
+
+// Parse a `known_hosts` file's text.
+//
+// Never fails: a line this package cannot read is SKIPPED and counted
+// rather than refused, because a real file has comments, blank lines,
+// `@cert-authority` entries for certificate types this package does not
+// implement, and keys in algorithms it has never heard of — and a
+// parser that refused the file over one of them leaves the caller with
+// no known hosts at all, which is the worst possible answer.
+//
+// ```novo
+// use sshhostkey
+//
+// fn load(text: Str) -> SshKnownHosts
+//     sshhostkey.parse_known_hosts(text)
+// ```
+pub fn parse_known_hosts(text: Str) -> SshKnownHosts []
+    todo("ssh-nv.sshhostkey.parse_known_hosts")
+
+// How many lines were skipped as unreadable.
+//
+// Published because "your known_hosts has four entries this client
+// cannot read" is a sentence worth being able to print, and because a
+// silent skip is how a caller ends up trusting nothing and not knowing
+// why.
+pub fn unreadable_lines(k: SshKnownHosts) -> Int []
+    todo("ssh-nv.sshhostkey.unreadable_lines")
+
+// An empty set, for a caller that manages its own trust.
+pub fn empty_known_hosts() -> SshKnownHosts []
+    todo("ssh-nv.sshhostkey.empty_known_hosts")
+
+// The verdict for a host, a port and a key.
+//
+// The port matters: `[example.com]:2222` and `example.com` are
+// different entries, and a client that ignored the port accepts the key
+// of a service running on another port of the same machine — which on a
+// shared host is somebody else's.
+//
+// ```novo
+// use sshhostkey
+//
+// fn check(k: SshKnownHosts, host: Str, key: [u8]) -> SshHostVerdict
+//     sshhostkey.verify(k, host, 22, key)
+// ```
+pub fn verify(k: SshKnownHosts, host: Str, port: Int, key: [u8]) -> SshHostVerdict []
+    todo("ssh-nv.sshhostkey.verify")
+
+// The fault a verdict implies, or nothing for `SshHostKnown`.
+//
+// `SshHostUnknown` is a FAULT here and not a pass, which is the
+// default this module has: a caller that wants trust-on-first-use
+// matches on the verdict instead, and the difference between the two
+// is visible in their code.
+pub fn fault_of(v: SshHostVerdict, host: Str, key: [u8]) -> ?SshFault []
+    todo("ssh-nv.sshhostkey.fault_of")
+
+// Whether a host matches one line's patterns.
+//
+// The pattern grammar is `*`, `?` and `!` for an exception, and an
+// exception anywhere in a line's list means the line does not apply
+// however many other patterns matched.  Published because the
+// exception rule is the part that is wrong in most reimplementations.
+pub fn host_matches(line: SshKnownHost, host: Str, port: Int) -> Bool []
+    todo("ssh-nv.sshhostkey.host_matches")
+
+// Whether a line is the hashed form.
+pub fn is_hashed(line: SshKnownHost) -> Bool []
+    todo("ssh-nv.sshhostkey.is_hashed")
+
+// Whether a hashed line matches a host.
+//
+// HMAC-SHA1 over the hostname under the line's salt, which is what
+// OpenSSH writes.  THIS PACKAGE READS THAT FORM AND DOES NOT WRITE A
+// NEW ONE — see the README: writing one means choosing to emit SHA-1,
+// and a library that did so quietly would be adding SHA-1 to a program
+// that had none.  `append_line` writes the plain form.
+pub fn hashed_matches(line: SshKnownHost, host: Str, port: Int) -> Bool []
+    todo("ssh-nv.sshhostkey.hashed_matches")
+
+// The `SHA256:` fingerprint of a key blob.
+//
+// The form every tool prints and every human compares.  Unpadded
+// base64, because that is what OpenSSH prints and a fingerprint with
+// `=` on the end does not compare equal to one a user read off a
+// screen.
+//
+// ```novo
+// use sshhostkey
+//
+// fn fp(key: [u8]) -> Str
+//     sshhostkey.fingerprint(key)
+// ```
+pub fn fingerprint(key: [u8]) -> Str []
+    todo("ssh-nv.sshhostkey.fingerprint")
+
+// The `MD5:` fingerprint, colon-separated hex.
+//
+// The OLD form, published for one reason: it is what is printed on the
+// side of a great many appliances and in a great many wikis, and a
+// user comparing against one of those needs it.  Not a default, and
+// never used for a comparison this package makes.
+pub fn legacy_fingerprint(key: [u8]) -> Str []
+    todo("ssh-nv.sshhostkey.legacy_fingerprint")
+
+// The algorithm name inside a key blob.
+//
+// A key blob begins with its own algorithm as a `string`, and a client
+// that trusted the name the server advertised rather than the one
+// inside the blob is trusting an unauthenticated field.
+pub fn algorithm_of(key: [u8]) -> Result<Str, SshFault> []
+    todo("ssh-nv.sshhostkey.algorithm_of")
+
+// A `known_hosts` line for a host and a key, in the plain form.
+//
+// What a trust-on-first-use caller appends.  The caller writes the
+// file: this module has no `[fs]` and does not want one.
+pub fn append_line(host: Str, port: Int, key: [u8]) -> Str []
+    todo("ssh-nv.sshhostkey.append_line")
+
+// The same set with one more host and key.
+pub fn with_host(k: SshKnownHosts, host: Str, port: Int, key: [u8]) -> SshKnownHosts []
+    todo("ssh-nv.sshhostkey.with_host")
+
+// The host-key algorithms this package can verify, in preference
+// order.
+//
+// One entry today.  Published because it is what goes in the KEXINIT
+// and because a caller looking at why a server would not negotiate
+// wants to see the list rather than infer it.
+pub fn supported_algorithms() -> [Str] []
+    todo("ssh-nv.sshhostkey.supported_algorithms")

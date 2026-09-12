@@ -1,0 +1,68 @@
+[package]
+name        = "ssh-nv"
+version     = "0.0.1"
+description = "An SSH client (RFC 4251-4254) as a sans-IO state machine: the binary packet protocol, curve25519-sha256 key exchange, the ChaCha20-Poly1305 cipher whose packet length is itself encrypted, Ed25519 host keys checked against a known_hosts the caller loads, publickey and password authentication with signing as an ACTION rather than a function, and channels with the flow-control window that decides whether a large transfer finishes or hangs.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and SEVEN OF THE EIGHT MODULES DECLARE NOTHING.  `sshfault`,
+# `sshpkt`, `sshkex`, `sshhostkey`, `sshkey`, `sshauth` and `sshchan`
+# are `[]` throughout: the framing, the key exchange, the host-key
+# policy, the private-key parser, the authentication exchange and the
+# channel windows are all functions from bytes and values to bytes and
+# values.  What performs is `sshconn` — `[net]` for the socket and
+# `[io]` for the standard library's own socket row.
+#
+# `layer = "host"` AND NOT `layer = "core"` WITH `host_modules`.  The
+# README argues the `ssh-core-nv` row those seven modules would move
+# to and RECOMMENDS TAKING IT, which is the strongest such
+# recommendation this lane makes: seven modules and about three
+# thousand lines against a hundred of pumping.
+layer       = "host"
+
+category    = "networking"
+
+tags        = ["ssh", "rfc4253", "rfc4254", "sans-io", "curve25519", "ed25519", "chacha20-poly1305", "sftp"]
+repository  = "https://github.com/novolang/ssh-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "An SSH client, and the window that decides whether it finishes"
+
+[dependencies]
+# SHA-256 for the exchange hash and the key derivation, and `ct_eq` for
+# the one comparison in the handshake an attacker gets to iterate
+# against.  Also SHA-256 for the `known_hosts` hashed-hostname form,
+# which is HMAC-SHA1 in OpenSSH's own file and is why `sshhostkey` can
+# read that form and cannot write a new one — see the README.
+crypto-nv = "^0.1"
+
+# X25519, which is what `curve25519-sha256` is and what every SSH
+# deployment made this decade negotiates first.
+x25519-nv = "^0.0.1"
+
+# Ed25519, for host keys and for `publickey` authentication.  The one
+# signature algorithm this package can complete on its own; RSA is
+# named as missing in the README.
+ed25519-nv = "^0.0.1"
+
+# ChaCha20 and Poly1305, for `chacha20-poly1305@openssh.com` — the
+# cipher OpenSSH prefers and the one whose framing this package's packet
+# layer is shaped around, because it encrypts the PACKET LENGTH under a
+# second key.
+chacha20-nv = "^0.0.1"
+
+# Base64, for the OpenSSH private key container and for `known_hosts`
+# and `authorized_keys` lines, all three of which are base64 with a
+# header around it.
+base64-nv = "^0.0.1"
