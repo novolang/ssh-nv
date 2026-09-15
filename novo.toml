@@ -1,6 +1,6 @@
 [package]
 name        = "ssh-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "An SSH client (RFC 4251-4254) as a sans-IO state machine: the binary packet protocol, curve25519-sha256 key exchange, the ChaCha20-Poly1305 cipher whose packet length is itself encrypted, Ed25519 host keys checked against a known_hosts the caller loads, publickey and password authentication with signing as an ACTION rather than a function, and channels with the flow-control window that decides whether a large transfer finishes or hangs.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
