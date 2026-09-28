@@ -3,9 +3,9 @@
 [base64-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.1"
-version = "0.0.1"
-hash = "94a0b7ec540fea5a13cc9dc54144d40770de75cc59644d8836efe633dc74cc74"
+req = "^0.1.1"
+version = "0.1.1"
+hash = "1a169a14fc8940aa316965a247786090ce554935da423e1dd3ae0b61866cd4c8"
 
 [chacha20-nv]
 source = "registry"
