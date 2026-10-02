@@ -228,7 +228,7 @@ fn test_a_publickey_is_queried_before_it_is_signed() [io]
     // A client that skipped the query signs with each key in turn,
     // which is five prompts on a token and five taps on a YubiKey —
     // and is what makes some clients unusable with hardware.
-    let a = sshauth.auth("klaus", some_bytes(32))
+    let a = sshauth.auth("ada", some_bytes(32))
     let out = some_bytes(256)
 
     test.case("the query carries no signature")
@@ -248,7 +248,7 @@ fn test_partial_success_is_not_a_refusal() [io]
     test.assert(sshauth.is_done(SshAuthOk))
 
     test.case("and a partial success is not a fault")
-    let a = sshauth.auth("klaus", some_bytes(32))
+    let a = sshauth.auth("ada", some_bytes(32))
     match sshauth.fault_of(a, SshAuthPartial(["password"]))
         Some(_) => test.assert(true)
         None    => test.assert(true)
@@ -372,7 +372,7 @@ fn test_the_kex_and_auth_surfaces_are_callable_from_outside() [io]
     let _vs = sshkex.verify_exchange_signature(some_bytes(51), some_bytes(32),
                                                some_bytes(83))
 
-    let a = sshauth.auth("klaus", some_bytes(32))
+    let a = sshauth.auth("ada", some_bytes(32))
     let _sr = sshauth.service_request(out)
     let _nr = sshauth.none_request(out, a)
     let _ps = sshauth.publickey_signed(out, a, "ssh-ed25519", some_bytes(51),
@@ -394,7 +394,7 @@ fn test_the_connection_refuses_an_unknown_host_unless_told_otherwise() [io, net]
     // and `accepting_unknown_hosts` is a named function rather than a
     // field so that a reviewer grepping for it finds every place a
     // program decided to trust a host it had never seen.
-    let cfg = sshconn.config("klaus", sshhostkey.empty_known_hosts())
+    let cfg = sshconn.config("ada", sshhostkey.empty_known_hosts())
 
     test.case("the default refuses")
     test.assert(not cfg.accept_unknown)
@@ -409,7 +409,7 @@ fn test_the_connection_refuses_an_unknown_host_unless_told_otherwise() [io, net]
 
 @test
 fn test_the_connection_accessors_are_callable_from_outside() [io, net]
-    let cfg = sshconn.config("klaus", sshhostkey.empty_known_hosts())
+    let cfg = sshconn.config("ada", sshhostkey.empty_known_hosts())
     test.case("what a caller reads and supplies")
     match sshconn.dial("127.0.0.1", 0, cfg)
         Err(_) => test.assert(true)
